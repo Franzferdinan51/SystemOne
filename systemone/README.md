@@ -75,6 +75,14 @@ eng.set_calibrator(cal)   # systemone() now returns calibrated probabilities
   Run: `python -m systemone.mcp_server` (env: `SYSTEMONE_MODEL`, `SYSTEMONE_DEVICE`,
   optional `SYSTEMONE_CALIBRATOR`). Only one model is loaded at a time; a per-call
   `model` on `typesafe_ask` swaps the loaded checkpoint.
+- **`shim.py`** — local drop-in for TypeSafe's hosted `/v1/systemone`
+  endpoint. Serves the exact request/response dialect Ryan's `jev-ultrafast`
+  and `mobile-jev` agents already speak (TypeSafe `questions` dict with
+  `criteria` + `instructions`, rich dict `state`) from a local GLiClass
+  engine — no API key, no cloud, no per-call cost. Run
+  `python -m systemone.shim [--port 8765]`, then point the agent's
+  `post_json` URL at `http://127.0.0.1:8765/v1/systemone`. The only change
+  on their side is the endpoint string.
 - **`distill.py`** — label with a teacher (`SyntheticTeacher`, `HFTeacher`,
   `LMStudioTeacher` — one local model at a time), write training JSON,
   fine-tune the edge student via the repo's `train.py`.

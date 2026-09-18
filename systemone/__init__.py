@@ -39,6 +39,7 @@ from .calibration import (
     expected_calibration_error,
     multiclass_ece,
 )
+from .shim import serve as serve_shim
 
 __all__ = [
     "SystemOne",
@@ -51,6 +52,7 @@ __all__ = [
     "validate_choice",
     "validate_distribution",
     "with_abstain",
+    "serve_shim",
     "TemperatureCalibrator",
     "PlattCalibrator",
     "IsotonicCalibrator",
