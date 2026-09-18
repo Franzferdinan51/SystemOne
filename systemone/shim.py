@@ -81,6 +81,7 @@ import datetime
 import json
 import logging
 import os
+import re
 import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -177,6 +178,131 @@ def build_route_question(
     }
 
 
+# ---------------------------------------------------------------------------
+# Hybrid routing policy (deterministic signals + GLiClass judge)
+# ---------------------------------------------------------------------------
+#
+# The zero-shot choice head is a weak signal for capability-tier routing: on
+# the bundled tiers it returns near-uniform probabilities (~0.44-0.47) no
+# matter how the tier descriptions are worded. So the deterministic layer
+# below carries the decision, and the classifier acts as a cheap Jev-style
+# second opinion that can only *raise* the tier when it is confident
+# (>= 0.65). When the two judges confidently disagree, routing confidence
+# drops; below 0.60 the router escalates one tier rather than risk
+# under-provisioning the task.
+
+_TIER_ORDER = ("economy", "balanced", "heavy")
+_ESCALATION_THRESHOLD = 0.60
+_CLASSIFIER_RAISE_CONFIDENCE = 0.65
+_DISAGREEMENT_PENALTY = 0.12
+_LONG_INPUT_CHARS = 2000
+
+# Obvious "this needs the strong model" markers (regexes over lowercased text).
+_HEAVY_PATTERNS = [
+    r"debug(ging|ger)?s?\b",
+    r"deadlock",
+    r"race condition",
+    r"stack ?trace",
+    r"traceback",
+    r"segfault",
+    r"memory leak",
+    r"multithread",
+    r"concurren\w*",
+    r"distributed",
+    r"refactor",
+    r"architect(ure)?",
+    r"theorem",
+    r"\bproof\b",
+    r"\bprov(e|ing)\b",
+    r"calculus",
+    r"\bintegral\b",
+    r"differential equation",
+    r"linear algebra",
+    r"cryptograph",
+    r"compiler",
+    r"\bkernel\b",
+    r"contract",
+    r"\blegal\b",
+    r"lawsuit",
+    r"compliance",
+    r"medical",
+    r"diagnos(is|ed|ing|tic)\b",
+    r"security audit",
+    r"vulnerab",
+    r"\bexploit\b",
+    r"penetration test",
+    r"\bai agent\b",
+    r"system design",
+    r"design a (system|distributed)",
+    r"roadmap",
+    r"performance tun",
+]
+
+# Obvious "the tiny model is plenty" markers.
+_ECONOMY_PATTERNS = [
+    r"summariz",
+    r"\bsummary\b",
+    r"tl;?dr\b",
+    r"one[- ]sentence",
+    r"\bextract\b",
+    r"classif(y|ication)",
+    r"rewrite",
+    r"translat",
+    r"spell(ing| ?check)?\b",
+    r"\bgrammar\b",
+    r"proofread",
+    r"\bhaiku\b",
+    r"\bpoem\b",
+    r"capital of",
+    r"bullet points",
+]
+
+
+def analyze_task(task: str) -> Dict[str, Any]:
+    """Deterministic complexity analysis: map task text to a suggested tier.
+
+    Returns a dict with the suggested tier name ("economy" | "balanced" |
+    "heavy"), a confidence in [0, 1], human-readable reasons, and whether any
+    real signal fired (vs. the default middle-tier guess).
+    """
+    text = (task or "").lower()
+
+    def _hits(patterns: Sequence[str]) -> List[str]:
+        found: List[str] = []
+        for pattern in patterns:
+            match = re.search(pattern, text)
+            if match:
+                found.append(match.group(0))
+        return found
+
+    heavy_hits = _hits(_HEAVY_PATTERNS)
+    economy_hits = _hits(_ECONOMY_PATTERNS)
+    if len(task or "") > _LONG_INPUT_CHARS:
+        heavy_hits.append(f"long input (>{_LONG_INPUT_CHARS} chars)")
+
+    reasons = [f"complexity signal: '{h}'" for h in heavy_hits]
+    reasons += [f"trivial-task signal: '{h}'" for h in economy_hits]
+
+    if heavy_hits and economy_hits:
+        # Substance wins over form: a legal/medical/technical document that
+        # needs summarizing still needs the strong model to get it right.
+        reasons.append("conflicting signals; erring toward heavy")
+        return {"tier": "heavy", "confidence": 0.55, "reasons": reasons,
+                "has_signal": True}
+    if len(heavy_hits) >= 2:
+        return {"tier": "heavy", "confidence": 0.85, "reasons": reasons,
+                "has_signal": True}
+    if heavy_hits:
+        return {"tier": "heavy", "confidence": 0.62, "reasons": reasons,
+                "has_signal": True}
+    if economy_hits:
+        return {"tier": "economy", "confidence": 0.80, "reasons": reasons,
+                "has_signal": True}
+    reasons.append("no strong complexity signals; default middle tier")
+    return {"tier": "balanced", "confidence": 0.68, "reasons": reasons,
+            "has_signal": False}
+
+
 def parse_route_body(
     body: Dict[str, Any], default_registry: Dict[str, Dict[str, Any]]
 ) -> tuple[str, str, List[Dict[str, str]]]:
@@ -206,30 +332,106 @@ def route_decision(
     candidates: List[Dict[str, str]],
     cost_bias: str,
 ) -> Dict[str, Any]:
-    """Ask the engine which tier should handle the task.
+    """Pick the cheapest sufficient tier for *task*.
+
+    Hybrid policy:
+      1. Deterministic complexity analysis sets the base tier (and a floor
+         when real signals fired).
+      2. The GLiClass choice head is a second opinion: it may *raise* the
+         tier when confident (>= 0.65), never lower it.
+      3. cost_bias nudges one tier toward cheap ("economy") or capable
+         ("quality"); "economy" never drops below the deterministic floor.
+      4. If final confidence is below 0.60, escalate one tier toward
+         capability rather than risk under-provisioning.
+
+    Candidate order is capability order (cheapest first); the bundled
+    registry lists tiers economy -> balanced -> heavy.
 
     Returns the {"model_id", "tier", "rationale", "confidence",
-    "probabilities", "cost_bias"} route dict.
+    "probabilities", "cost_bias", "deterministic_tier", "signals"} route dict.
     """
+    tiers = [c["tier"] for c in candidates]
+    n = len(tiers)
+    if n == 0:
+        raise ValueError("no candidate tiers to route over")
+
+    det = analyze_task(task)
+    det_rank = _TIER_ORDER.index(det["tier"])
+    det_idx = {0: 0, 1: n // 2, 2: n - 1}[det_rank]
+
     question = build_route_question(task, candidates, cost_bias)
     answers = engine.systemone(task, [question])
     answer = validate_choice(answers["route"], question["options"])
-    tier = answer["choice"]
-    winner = next(c for c in candidates if c["tier"] == tier)
-    conf = float(answer["confidence"])
+    clf_probs = {tier: float(prob) for tier, prob in answer["probabilities"].items()}
+    clf_tier = answer["choice"]
+    clf_conf = float(answer["confidence"])
+    clf_idx = tiers.index(clf_tier)
+
+    idx = det_idx
+    notes = list(det["reasons"])
+    if clf_conf >= _CLASSIFIER_RAISE_CONFIDENCE and clf_idx > idx:
+        idx = clf_idx
+        conf = clf_conf
+        notes.append(
+            f"classifier raised tier to '{clf_tier}' (confidence {clf_conf:.2f})"
+        )
+    elif clf_conf >= _CLASSIFIER_RAISE_CONFIDENCE and clf_idx < det_idx:
+        conf = max(0.0, det["confidence"] - _DISAGREEMENT_PENALTY)
+        notes.append(
+            f"classifier disagreed downward ('{clf_tier}', {clf_conf:.2f}); "
+            "confidence reduced"
+        )
+    else:
+        conf = det["confidence"] + (0.05 if clf_idx == idx else 0.0)
+        conf = min(0.95, conf)
+        notes.append(f"classifier chose '{clf_tier}' (confidence {clf_conf:.2f})")
+
+    floor = det_idx if det["has_signal"] else 0
+    if cost_bias == "economy":
+        new_idx = max(floor, idx - 1)
+        if new_idx != idx:
+            notes.append(f"'economy' bias shifted tier down to '{tiers[new_idx]}'")
+        idx = new_idx
+    elif cost_bias == "quality":
+        new_idx = min(n - 1, idx + 1)
+        if new_idx != idx:
+            notes.append(f"'quality' bias shifted tier up to '{tiers[new_idx]}'")
+        idx = new_idx
+
+    if conf < _ESCALATION_THRESHOLD and idx < n - 1:
+        idx += 1
+        conf = _ESCALATION_THRESHOLD
+        notes.append("low routing confidence; escalated one tier toward capability")
+
+    # Blended probability distribution for the response: deterministic
+    # one-hot (smoothed) carries 0.65, the classifier's head 0.35.
+    det_dist = {
+        tier: (0.70 if i == det_idx else (0.30 / (n - 1) if n > 1 else 0.0))
+        for i, tier in enumerate(tiers)
+    }
+    blended = {
+        tier: 0.65 * det_dist[tier] + 0.35 * clf_probs.get(tier, 0.0)
+        for tier in tiers
+    }
+    total = sum(blended.values()) or 1.0
+    blended = {tier: prob / total for tier, prob in blended.items()}
+
+    winner = candidates[idx]
     task_snip = task if len(task) <= 80 else task[:77] + "..."
     rationale = (
-        f"Task '{task_snip}' — '{tier}' ({winner['model_id']}) is the cheapest "
-        f"tier rated sufficient under the '{cost_bias}' policy "
-        f"(confidence {conf:.2f})."
+        f"Task '{task_snip}' -> '{winner['tier']}' ({winner['model_id']}): "
+        + "; ".join(notes)
+        + f" (final confidence {conf:.2f})."
     )
     return {
         "model_id": winner["model_id"],
-        "tier": tier,
+        "tier": winner["tier"],
         "rationale": rationale,
-        "confidence": conf,
-        "probabilities": {t: float(p) for t, p in answer["probabilities"].items()},
+        "confidence": round(conf, 4),
+        "probabilities": blended,
         "cost_bias": cost_bias,
+        "deterministic_tier": det["tier"],
+        "signals": det["reasons"],
     }
 
 

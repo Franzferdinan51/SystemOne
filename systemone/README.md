@@ -56,30 +56,56 @@ eng.set_calibrator(cal)   # systemone() now returns calibrated probabilities
 
 `POST /v1/systemone/route` (served by `python -m systemone.shim`) turns the
 bundled tier registry (`systemone/model_registry.json`) into a Jev-style
-model router: hand it a task, it returns the cheapest local tier rated
+model router: hand it a task, it returns the cheapest tier rated
 sufficient — plus a short rationale, confidence, and the full probability
-distribution. The routing judgment itself is one batched choice call on the
-already-loaded local engine; the registry is only ever a *catalog* (the
-router never loads the routed models, and tiers with `model_id: null` —
-like the 35B tier until you fill in your checkpoint — are never routed to).
+distribution. The registry is only ever a *catalog* (the router never loads
+the routed models, and tiers with `model_id: null` are never routed to).
+
+Routing policy is hybrid, because the zero-shot choice head alone doesn't
+discriminate capability tiers (it returns near-uniform probabilities no
+matter how the tier descriptions are worded — measured, not assumed):
+
+1. **Deterministic complexity analysis** carries the decision: obvious
+   heavy-task markers (debugging, deadlocks, race conditions, contracts,
+   proofs, …) route to `heavy`; trivial-task markers (summarize, extract,
+   translate, classify, …) route to `economy`; everything else defaults to
+   `balanced`.
+2. **The GLiClass head is a cheap second opinion**: one batched choice call
+   on the already-loaded local engine. It can only *raise* the tier, and
+   only when confident (≥ 0.65).
+3. **`cost_bias` nudges one tier** toward cheap (`economy`) or capable
+   (`quality`); `economy` never drops below the signal-backed floor.
+4. **Low-confidence escalation**: if final confidence drops below 0.60
+   (e.g. the two judges confidently disagree), the router escalates one
+   tier rather than risk under-provisioning.
+
+Registry order is capability order (cheapest first). The bundled registry is
+wired to Ryan's live LM Studio fleet on the Mac mini — `economy` →
+minicpm5-2b (tiny, fastest), `balanced` → ornith-1.5-9b (capable mid-size),
+`heavy` → ornith-1.5-35b-a3b (flagship 35B MoE, his preferred model). Pass
+your own `\"registry\"` inline to route over any fleet.
 
 ```bash
 curl -s http://127.0.0.1:8765/v1/systemone/route \
   -H 'Content-Type: application/json' \
   -d '{"task": "triage this support ticket for urgency",
        "cost_bias": "economy"}' | python -m json.tool
-# {"route": {"model_id": "knowledgator/gliclass-edge-v3.0", "tier": "edge",
-#            "rationale": "Task 'triage this support ticket for urgency' — 'edge'
-#                          (knowledgator/gliclass-edge-v3.0) is the cheapest tier
-#                          rated sufficient under the 'economy' policy
-#                          (confidence 0.81).",
-#            "confidence": 0.81,
-#            "probabilities": {"edge": 0.81, "base": 0.19},
-#            "cost_bias": "economy"},
+# {"route": {"model_id": "minicpm5-2b", "tier": "economy",
+#            "rationale": "Task 'triage this support ticket for urgency' ->
+#                          'economy' (minicpm5-2b): no strong complexity
+#                          signals; default middle tier; classifier chose
+#                          'economy' (confidence 0.45); 'economy' bias shifted
+#                          tier down to 'economy' (final confidence 0.68).",
+#            "confidence": 0.68,
+#            "probabilities": {"economy": 0.55, "balanced": 0.27,
+#                              "heavy": 0.18},
+#            "cost_bias": "economy",
+#            "deterministic_tier": "balanced",
+#            "signals": ["no strong complexity signals; default middle tier"]},
 #  "model": "knowledgator/gliclass-edge-v3.0", "usage": {}, "latency_ms": 112.4}
 ```
 
-Optional fields: `"tiers": ["edge", "base"]` to route within a subset, and
+Optional fields: `"tiers": ["economy", "balanced"]` to route within a subset, and
 `"registry": {...}` to supply your own tier catalog inline (same shape as
 `model_registry.json`). Every decision on both shim endpoints is appended as
 one JSON line to `systemone/logs/` (rotating, gitignored) — per-decision

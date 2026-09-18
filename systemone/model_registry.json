@@ -1,1 +1,24 @@
-{"_comment":"Tiered local model registry for the SystemOne model router (POST /v1/systemone/route). The router picks the cheapest tier sufficient for each task. Tiers with model_id=null are not routable until configured. latency_ms_p50: fill from measured runs (the shim logs per-decision latency to logs/systemone-shim.log) so routing claims carry receipts.","tiers":{"base":{"description":"text-classification; no-tools; context=512 tokens; latency=tier-3 (slowest of the local GLiClass family); memory=~0.8GB; cost=highest local. Best for: nuanced or ambiguous judgments where edge is uncertain.","latency_ms_p50":null,"model_id":"knowledgator/gliclass-base-v1.0"},"edge":{"description":"text-classification; no-tools; context=512 tokens; latency=tier-1 (fastest); memory=~0.1GB; cost=cheapest. Best for: simple classification, spam/triage, routing pre-checks.","latency_ms_p50":135,"model_id":"knowledgator/gliclass-edge-v3.0"},"heavy":{"description":"35B-class local LLM (LM Studio / llama.cpp). Highest capability, highest latency; reserved for tasks the local GLiClass tiers cannot judge.","latency_ms_p50":null,"model_id":null,"note":"Not configured: set model_id to your local 35B checkpoint (e.g. your LM Studio model id) to make this tier routable. The router skips null tiers."}}}
+{
+  "_comment": "Tiered model registry for the SystemOne model router (POST /v1/systemone/route). The router uses a cheap local GLiClass decision engine (Jev-style) to pick the CHEAPEST tier sufficient for each task. Tier descriptions are written contrastively (what each tier FAILS at) because the zero-shot classifier discriminates on capability boundaries, not marketing copy. Tiers with model_id=null are not routable until configured. latency_ms_p50: fill from measured runs (the shim logs per-decision latency to logs/systemone-shim.log) so routing claims carry receipts. Models served by LM Studio on the Mac mini (http://100.68.208.113:1234/v1) unless noted.",
+  "tiers": {
+    "economy": {
+      "cost": "cheapest local LLM; fastest responses",
+      "description": "Handles ONLY trivial tasks: one-sentence summaries, simple factual Q&A, basic rewrites, classification, extraction. FAILS at reasoning, code, math, or anything multi-step.",
+      "latency_ms_p50": null,
+      "model_id": "minicpm5-2b"
+    },
+    "balanced": {
+      "cost": "mid local LLM; moderate latency",
+      "description": "Handles everyday tasks: explanations, emails, brainstorming, simple scripts, planning, general chat. FAILS at hard reasoning, complex debugging, advanced math, large codebases.",
+      "latency_ms_p50": null,
+      "model_id": "ornith-1.5-9b"
+    },
+    "heavy": {
+      "cost": "strongest local LLM; highest latency",
+      "description": "Handles HARD tasks: complex reasoning, code generation and debugging, multithreaded race conditions, advanced math, long-context analysis, agent planning, high-stakes judgment. Ryan's preferred model.",
+      "latency_ms_p50": null,
+      "model_id": "ornith-1.5-35b-a3b",
+      "note": "LM Studio on the Mac mini. Only one model loaded at a time on the Windows PC - the Mac mini serves this fleet."
+    }
+  }
+}
