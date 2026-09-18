@@ -1,0 +1,46 @@
+"""systemone: local, open System One decision models.
+
+A Jev-style typed-decision layer over local GLiClass checkpoints:
+
+- api.SystemOne / api.systemone  -> choice / score / noul in one batched call
+- calibration.*                 -> temperature / Platt / isotonic calibration
+- mcp_server                     -> MCP tools (verify_claims, screen_content,
+                                   rank_candidates) over stdio
+- distill.*                      -> teacher -> tiny student pipeline
+- tune.*                         -> domain fine-tuning helper
+
+Quickstart:
+    from systemone import SystemOne
+    eng = SystemOne()  # loads gliclass-edge, one model at a time
+    out = eng.systemone("The server is on fire", [
+        {"name": "urgency", "type": "score", "levels": ["low", "medium", "high"]},
+        {"name": "page", "type": "noul", "statement": "Should I page the on-call engineer?"},
+    ])
+"""
+
+from .api import MAX_STATE_CHARS, SystemOne, SystemOneError, make_questions
+from .calibration import (
+    CalibratedScorer,
+    CalibrationExample,
+    IsotonicCalibrator,
+    PlattCalibrator,
+    TemperatureCalibrator,
+    expected_calibration_error,
+    multiclass_ece,
+)
+
+__all__ = [
+    "SystemOne",
+    "SystemOneError",
+    "MAX_STATE_CHARS",
+    "make_questions",
+    "TemperatureCalibrator",
+    "PlattCalibrator",
+    "IsotonicCalibrator",
+    "CalibratedScorer",
+    "CalibrationExample",
+    "expected_calibration_error",
+    "multiclass_ece",
+]
+
+__version__ = "0.1.0"

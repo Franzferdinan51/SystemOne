@@ -1,0 +1,30 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "systemone"
+version = "0.1.0"
+description = "Local, keyless Jev-style typed decisions on GLiClass — choice, score, noul"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+authors = [{ name = "Ryan Smith" }]
+keywords = ["gliclass", "jev", "decision-engine", "local-ai", "zero-shot-classification"]
+dependencies = [
+    "torch",
+    "transformers>=4.40",
+    "huggingface_hub",
+    "numpy",
+    "gliclass @ git+https://github.com/Franzferdinan51/GLiClass",
+]
+
+[project.optional-dependencies]
+mcp = ["mcp<2"]
+dev = ["pytest"]
+
+[project.scripts]
+systemone = "systemone.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["systemone*"]
