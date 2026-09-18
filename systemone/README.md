@@ -52,6 +52,48 @@ cal = TemperatureCalibrator().fit(scores, labels)
 eng.set_calibrator(cal)   # systemone() now returns calibrated probabilities
 ```
 
+## Local model router
+
+`POST /v1/systemone/route` (served by `python -m systemone.shim`) turns the
+bundled tier registry (`systemone/model_registry.json`) into a Jev-style
+model router: hand it a task, it returns the cheapest local tier rated
+sufficient — plus a short rationale, confidence, and the full probability
+distribution. The routing judgment itself is one batched choice call on the
+already-loaded local engine; the registry is only ever a *catalog* (the
+router never loads the routed models, and tiers with `model_id: null` —
+like the 35B tier until you fill in your checkpoint — are never routed to).
+
+```bash
+curl -s http://127.0.0.1:8765/v1/systemone/route \
+  -H 'Content-Type: application/json' \
+  -d '{"task": "triage this support ticket for urgency",
+       "cost_bias": "economy"}' | python -m json.tool
+# {"route": {"model_id": "knowledgator/gliclass-edge-v3.0", "tier": "edge",
+#            "rationale": "Task 'triage this support ticket for urgency' — 'edge'
+#                          (knowledgator/gliclass-edge-v3.0) is the cheapest tier
+#                          rated sufficient under the 'economy' policy
+#                          (confidence 0.81).",
+#            "confidence": 0.81,
+#            "probabilities": {"edge": 0.81, "base": 0.19},
+#            "cost_bias": "economy"},
+#  "model": "knowledgator/gliclass-edge-v3.0", "usage": {}, "latency_ms": 112.4}
+```
+
+Optional fields: `"tiers": ["edge", "base"]` to route within a subset, and
+`"registry": {...}` to supply your own tier catalog inline (same shape as
+`model_registry.json`). Every decision on both shim endpoints is appended as
+one JSON line to `systemone/logs/` (rotating, gitignored) — per-decision
+milliseconds with receipts, so benchmark claims stay honest.
+
+Copy-paste recipe for your agent builder:
+
+> Build an agent where every task is first sent to my local SystemOne
+> router at `http://127.0.0.1:8765/v1/systemone/route` with the task text
+> and a `cost_bias` of `economy`, `balanced`, or `quality`. Run the task on
+> the returned `model_id`, and display the routing decision — tier,
+> rationale, and confidence — inline as it happens. No API keys, no cloud:
+> routing is free and local.
+
 ## Pieces
 
 - **`api.py`** — `SystemOne`: loads one GLiClass checkpoint (edge → small → base,
@@ -82,7 +124,22 @@ eng.set_calibrator(cal)   # systemone() now returns calibrated probabilities
   engine — no API key, no cloud, no per-call cost. Run
   `python -m systemone.shim [--port 8765]`, then point the agent's
   `post_json` URL at `http://127.0.0.1:8765/v1/systemone`. The only change
-  on their side is the endpoint string.
+  on their side is the endpoint string. Also serves
+  **`POST /v1/systemone/route`** — the local model router (see above).
+  Every decision on both endpoints is logged as one JSON line to
+  `systemone/logs/` (rotating, gitignored): endpoint, latency_ms, status,
+  model, route tier — receipts for benchmark claims.
+- **`model_registry.json`** — tiered local model catalog for the router:
+  `edge` (gliclass-edge-v3.0, fastest/cheapest), `base`
+  (gliclass-base-v1.0, sharper), `heavy` (35B-class, `model_id: null` until
+  you fill in your checkpoint — never routed to while unconfigured). Each
+  tier carries a capability description and a `latency_ms_p50` placeholder
+  for measured numbers.
+- **`bench_2048.py`** — headless 2048 decision-loop benchmark: canned board
+  states, four slide candidates per step, local `/v1/systemone` as the
+  decider. Reports total wall time, mean/p50 ms per decision, and cost
+  ($0.00). Honest about its limits in the docstring: no browser on this
+  box, so it proves the decision path + cost story, not live play.
 - **`distill.py`** — label with a teacher (`SyntheticTeacher`, `HFTeacher`,
   `LMStudioTeacher` — one local model at a time), write training JSON,
   fine-tune the edge student via the repo's `train.py`.
