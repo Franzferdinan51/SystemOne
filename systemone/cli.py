@@ -25,7 +25,7 @@ import json
 import os
 import sys
 
-from .api import MAX_STATE_CHARS, MODEL_CANDIDATES, SystemOne, SystemOneError
+from .api import MAX_STATE_CHARS, MODEL_CANDIDATES, SystemOne, SystemOneError, default_device
 
 
 def _env_model() -> str:
@@ -42,8 +42,11 @@ def cmd_status(args: argparse.Namespace) -> int:
 
     print("systemone status")
     print(f"  configured model : {_env_model()}")
+    mps = getattr(torch.backends, "mps", None)
+    mps_ok = bool(mps is not None and mps.is_available())
     print(f"  device setting   : {_env_device()} "
-          f"(cuda available: {torch.cuda.is_available()})")
+          f"(resolved: {default_device()}, "
+          f"cuda: {torch.cuda.is_available()}, mps: {mps_ok})")
     print(f"  max state chars  : {MAX_STATE_CHARS}")
 
     cal_path = os.environ.get("SYSTEMONE_CALIBRATOR", "").strip()

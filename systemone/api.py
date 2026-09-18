@@ -39,6 +39,22 @@ MODEL_CANDIDATES = [
 MAX_STATE_CHARS = 6000
 
 
+def default_device() -> str:
+    """Best torch device for this machine: CUDA > Apple MPS > CPU.
+
+    Stock pip torch wheels are CUDA-enabled on Linux/Windows and
+    MPS-capable on macOS, so Apple Silicon gets GPU acceleration with no
+    extra installs. Never raises: if the MPS backend is absent (older
+    torch), it is simply skipped.
+    """
+    if torch.cuda.is_available():
+        return "cuda"
+    mps = getattr(torch.backends, "mps", None)
+    if mps is not None and mps.is_available():
+        return "mps"
+    return "cpu"
+
+
 class SystemOneError(RuntimeError):
     """Sanitized engine failure.
 
@@ -193,7 +209,8 @@ class SystemOne:
     Args:
         model_name: HF id of the GLiClass checkpoint. If None, tries
             MODEL_CANDIDATES smallest-first.
-        device: "cuda", "cpu", or None (auto).
+        device: "cuda", "mps", "cpu", or None / "auto" (auto-detect:
+            CUDA if available, else Apple MPS, else CPU).
         temperature: softmax temperature for output probabilities (1.0 = raw).
         calibrator: optional fitted TemperatureCalibrator; overrides temperature.
     """
@@ -205,8 +222,12 @@ class SystemOne:
         temperature: float = 1.0,
         calibrator: TemperatureCalibrator | None = None,
     ) -> None:
-        if device is None:
-            device = "cuda" if torch.cuda.is_available() else "cpu"
+        if device is None or (
+            isinstance(device, str) and device.strip().lower() == "auto"
+        ):
+            # "auto" (the SYSTEMONE_DEVICE default) resolves here, so every
+            # entry point — shim, CLI, MCP server — gets CUDA > MPS > CPU.
+            device = default_device()
         self.device = device
 
         candidates = [model_name] if model_name else MODEL_CANDIDATES

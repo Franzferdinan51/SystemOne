@@ -12,6 +12,12 @@ license = { text = "MIT" }
 authors = [{ name = "Ryan Smith" }]
 keywords = ["gliclass", "jev", "decision-engine", "local-ai", "zero-shot-classification"]
 dependencies = [
+    # torch resolves per platform from stock pip wheels: CUDA-enabled on
+    # Linux/Windows, MPS-capable on macOS (Apple Silicon). SystemOne
+    # auto-selects the best device (CUDA > MPS > CPU); override with
+    # SYSTEMONE_DEVICE=cuda|mps|cpu|auto. For a slim CPU-only Linux
+    # install, pre-install torch from the CPU index first (see README):
+    #   pip install torch --index-url https://download.pytorch.org/whl/cpu
     "torch",
     "transformers>=4.40",
     "huggingface_hub",

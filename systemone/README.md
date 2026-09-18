@@ -300,7 +300,9 @@ pytest systemone/tests -m "not slow"   # fast, no model needed
 pytest systemone/tests                  # includes one end-to-end model test
 ```
 
-## Install (Windows, RTX GPU)
+## Install
+
+### Windows (RTX GPU)
 
 ```bash
 python -m pip install torch --index-url https://download.pytorch.org/whl/cu128
@@ -310,3 +312,45 @@ pip install -e .   # installs the local gliclass fork (from repo root)
 
 Then `python -m systemone.mcp_server` or import `systemone` anywhere.
 Set `PYTHONIOENCODING=utf-8` on Windows consoles.
+
+### macOS (Apple Silicon)
+
+```bash
+python3 -m venv .venv && source .venv/bin/activate
+python -m pip install torch transformers scikit-learn numpy scipy tqdm "mcp<2" packaging
+pip install -e .   # from the repo root
+```
+
+Stock pip `torch` wheels on macOS are MPS-capable — SystemOne selects `mps`
+automatically when available (override with `SYSTEMONE_DEVICE=cpu`).
+
+### Linux
+
+CUDA (NVIDIA GPU):
+
+```bash
+python3 -m venv .venv && source .venv/bin/activate
+python -m pip install torch --index-url https://download.pytorch.org/whl/cu128
+python -m pip install transformers scikit-learn numpy scipy tqdm "mcp<2" packaging
+pip install -e .   # from the repo root
+```
+
+CPU-only (slim — no NVIDIA driver needed):
+
+```bash
+python -m pip install torch --index-url https://download.pytorch.org/whl/cpu
+python -m pip install transformers scikit-learn numpy scipy tqdm "mcp<2" packaging
+pip install -e .   # from the repo root
+```
+
+### Run offline
+
+```bash
+export HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1
+export SYSTEMONE_MODEL=knowledgator/gliclass-edge-v3.0   # or any cached checkpoint
+export SYSTEMONE_DEVICE=auto                             # cuda | mps | cpu | auto
+python -m systemone.shim --port 8765
+```
+
+`python -m systemone.cli status --load` verifies the model loads and reports
+the selected device and a probe latency.

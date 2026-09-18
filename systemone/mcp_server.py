@@ -16,7 +16,7 @@ or:   systemone-mcp   (if installed)
 
 Configure with env vars:
   SYSTEMONE_MODEL       HF model id (default: smallest available, edge first)
-  SYSTEMONE_DEVICE      cuda | cpu   (default: auto)
+  SYSTEMONE_DEVICE      cuda | mps | cpu  (default: auto — CUDA, else Apple MPS, else CPU)
   SYSTEMONE_CALIBRATOR  path to a pickled TemperatureCalibrator (optional)
 """
 
