@@ -3,7 +3,7 @@
   "tiers": {
     "economy": {
       "cost": "cheapest local LLM; fastest responses",
-      "description": "Handles ONLY trivial tasks: one-sentence summaries, simple factual Q&A, basic rewrites, classification, extraction. FAILS at reasoning, code, math, or anything multi-step.",
+      "description": "Handles ONLY trivial tasks: one-sentence summaries, simple factual Q&A, basic rewrites, classification, extraction. FAILS at reasoning, code, math, navigation, tool use, browser actions, or anything multi-step or agentic.",
       "latency_ms_p50": null,
       "model_id": "minicpm5-2b"
     },
@@ -15,7 +15,7 @@
     },
     "heavy": {
       "cost": "strongest local LLM; highest latency",
-      "description": "Handles HARD tasks: complex reasoning, code generation and debugging, multithreaded race conditions, advanced math, long-context analysis, agent planning, high-stakes judgment. Ryan's preferred model.",
+      "description": "Handles HARD tasks: complex reasoning, code generation and debugging, multithreaded race conditions, advanced math, long-context analysis, agent planning, multi-step browser navigation and automation, MCP tool calls, high-stakes judgment. Ryan's preferred model.",
       "latency_ms_p50": null,
       "model_id": "ornith-1.5-35b-a3b",
       "note": "LM Studio on the Mac mini. Only one model loaded at a time on the Windows PC - the Mac mini serves this fleet."

@@ -202,6 +202,26 @@ def test_analyze_task_conflict_errs_heavy():
     assert det["has_signal"]
 
 
+def test_analyze_task_agentic_tool_use_routes_heavy():
+    # Sep 18 X trial: browser-navigation steps kept under-routing to the
+    # cheap tiers even though they need the tool-capable local LLM.
+    det = shim.analyze_task(
+        "navigate the browser to the user's X profile and click the "
+        "profile menu")
+    assert det["tier"] == "heavy"
+    assert det["has_signal"]
+    # navigation + a summarize form: substance wins over form
+    det = shim.analyze_task(
+        "scroll down the feed, read the latest posts, and summarize "
+        "engagement")
+    assert det["tier"] == "heavy"
+    assert det["has_signal"]
+    det = shim.analyze_task(
+        "check inbox with the MCP email tool and summarize new messages")
+    assert det["tier"] == "heavy"
+    assert det["has_signal"]
+
+
 # -- hybrid routing table -------------------------------------------------------
 # Uses the real bundled registry (economy/balanced/heavy) with the
 # low-confidence stub standing in for the GLiClass head.
@@ -219,6 +239,13 @@ ROUTING_TABLE = [
     ("prove the Riemann hypothesis", "balanced", "heavy"),
     ("analyze this 40-page contract for legal risks", "balanced", "heavy"),
     ("refactor this auth module to fix the race condition", "balanced", "heavy"),
+    # agentic tool-use tasks route to the tool-capable heavy tier (Sep 18 X trial)
+    ("navigate the browser to the user's X profile and click the profile menu",
+     "balanced", "heavy"),
+    ("scroll down the feed, read the latest posts, and summarize engagement",
+     "balanced", "heavy"),
+    ("check inbox with the MCP email tool and summarize new messages",
+     "balanced", "heavy"),
     # cost_bias nudges one tier ...
     ("summarize this article in one sentence", "quality", "balanced"),
     ("explain photosynthesis simply", "quality", "heavy"),
@@ -301,6 +328,13 @@ ROUTING_TABLE = [
     ("prove the Riemann hypothesis", "balanced", "heavy"),
     ("analyze this 40-page contract for legal risks", "balanced", "heavy"),
     ("refactor this auth module to fix the race condition", "balanced", "heavy"),
+    # agentic tool-use tasks route to the tool-capable heavy tier (Sep 18 X trial)
+    ("navigate the browser to the user's X profile and click the profile menu",
+     "balanced", "heavy"),
+    ("scroll down the feed, read the latest posts, and summarize engagement",
+     "balanced", "heavy"),
+    ("check inbox with the MCP email tool and summarize new messages",
+     "balanced", "heavy"),
     # cost_bias nudges one tier ...
     ("summarize this article in one sentence", "quality", "balanced"),
     ("explain photosynthesis simply", "quality", "heavy"),
