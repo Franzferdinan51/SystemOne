@@ -74,10 +74,11 @@ class StubEngine:
 
 def test_load_bundled_registry():
     reg = load_registry()
-    assert reg["edge"]["model_id"] == "knowledgator/gliclass-edge-v3.0"
-    assert reg["base"]["model_id"] == "knowledgator/gliclass-base-v1.0"
-    assert reg["heavy"]["model_id"] is None  # unconfigured until user fills it in
-    assert "latency_ms_p50" in reg["edge"]  # placeholder for measured receipts
+    assert reg["economy"]["model_id"] == "minicpm5-2b"
+    assert reg["balanced"]["model_id"] == "ornith-1.5-9b"
+    assert reg["heavy"]["model_id"] == "ornith-1.5-35b-a3b"
+    assert list(reg) == ["economy", "balanced", "heavy"]  # cheapest-first order
+    assert "latency_ms_p50" in reg["economy"]  # placeholder for measured receipts
 
 
 def test_candidates_skips_unconfigured_tiers():
@@ -174,7 +175,10 @@ def test_http_route_roundtrip(log_file):
     try:
         status, payload = _post(
             server.server_address[1], "/v1/systemone/route",
-            {"task": "triage this ticket", "cost_bias": "economy"},
+            # "summarize" fires a deterministic economy signal (no heavy signal
+            # fires on "article"), so the hybrid router must pick the cheapest
+            # candidate tier end to end.
+            {"task": "summarize this article", "cost_bias": "economy"},
         )
         assert status == 200
         route = payload["route"]
@@ -251,7 +255,9 @@ def test_latency_logged_for_both_endpoints(log_file):
         assert rec["latency_ms"] >= 0
         assert rec["model"] == "stub"
         assert "ts" in rec
-    assert by_endpoint["/v1/systemone/route"]["route_tier"] == "edge"
+    # "do a thing" carries no complexity signals, so the hybrid router
+    # defaults to the middle tier of the stub registry ("base").
+    assert by_endpoint["/v1/systemone/route"]["route_tier"] == "base"
     assert by_endpoint["/v1/systemone"]["n_questions"] == 1
 
 
