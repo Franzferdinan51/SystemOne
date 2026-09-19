@@ -14,6 +14,7 @@ Only ONE local model is ever loaded per SystemOne instance.
 
 from __future__ import annotations
 
+import os
 import time
 from typing import Any, Dict, List, Sequence
 
@@ -37,6 +38,14 @@ MODEL_CANDIDATES = [
 # for the routing task). The encoder truncates to 512 tokens anyway, so the
 # cap only bounds memory/log noise — it does not change judgments.
 MAX_STATE_CHARS = 6000
+
+
+def _resolve_candidates(model_name: str | None) -> List[str]:
+    """Model load order: explicit arg wins, then the SYSTEMONE_MODEL env var,
+    then MODEL_CANDIDATES smallest-first. Keeps the error hint below honest —
+    an override that doesn't change load order is just aspirational."""
+    chosen = (model_name or "").strip() or (os.environ.get("SYSTEMONE_MODEL") or "").strip()
+    return [chosen] if chosen else list(MODEL_CANDIDATES)
 
 
 def default_device() -> str:
@@ -207,8 +216,9 @@ class SystemOne:
     """Local System One decision engine.
 
     Args:
-        model_name: HF id of the GLiClass checkpoint. If None, tries
-            MODEL_CANDIDATES smallest-first.
+        model_name: HF id of the GLiClass checkpoint. If None, the
+            SYSTEMONE_MODEL env var is honored, else MODEL_CANDIDATES
+            smallest-first.
         device: "cuda", "mps", "cpu", or None / "auto" (auto-detect:
             CUDA if available, else Apple MPS, else CPU).
         temperature: softmax temperature for output probabilities (1.0 = raw).
@@ -230,7 +240,7 @@ class SystemOne:
             device = default_device()
         self.device = device
 
-        candidates = [model_name] if model_name else MODEL_CANDIDATES
+        candidates = _resolve_candidates(model_name)
         last_err: Exception | None = None
         for cand in candidates:
             try:

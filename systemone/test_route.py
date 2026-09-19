@@ -459,3 +459,20 @@ def test_latency_logged_on_errors(log_file):
     records = _read_log(log_file)
     assert records and records[-1]["status"] == 400
     assert records[-1]["endpoint"] == "/v1/systemone/route"
+
+
+def test_resolve_candidates_env_override(monkeypatch):
+    """No model load — pure load-order logic for the SYSTEMONE_MODEL hint."""
+    from systemone.api import _resolve_candidates, MODEL_CANDIDATES
+
+    monkeypatch.delenv("SYSTEMONE_MODEL", raising=False)
+    assert _resolve_candidates(None) == MODEL_CANDIDATES
+    assert _resolve_candidates(" explicit/model ") == ["explicit/model"]
+
+    monkeypatch.setenv("SYSTEMONE_MODEL", " myorg/cached-gliclass ")
+    assert _resolve_candidates(None) == ["myorg/cached-gliclass"]
+    # explicit arg still wins over the env var
+    assert _resolve_candidates("explicit/model") == ["explicit/model"]
+
+    monkeypatch.setenv("SYSTEMONE_MODEL", "   ")
+    assert _resolve_candidates(None) == MODEL_CANDIDATES
