@@ -82,6 +82,7 @@ import json
 import logging
 import os
 import re
+import sys
 import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -294,6 +295,23 @@ _ECONOMY_PATTERNS = [
     r"bullet points",
 ]
 
+# Ultra-trivial Q&A: bare arithmetic and short factual questions. Single-lookup
+# tasks where the cheapest tier is plenty. Kept separate from _ECONOMY_PATTERNS
+# because the short-question rule also needs a length + shape check (below).
+_TRIVIAL_ARITHMETIC_PATTERNS = [
+    r"\d+\s*[+\-*/^]\s*\d+",  # bare arithmetic expression: 2+2, 3 * 4
+    r"\bwhat is [\d][\d\s+\-*/().^%]*\??",  # "what is 2+2?"
+    r"\bcalculat\w*\b",
+    r"\bhow much is\b",
+    r"\bhow many\b",
+]
+
+# Short factual questions ("What/Who/When/Where/Which ...?") under this length
+# are single-lookup tasks -> economy. Heavy patterns still win on conflict
+# (substance over form), and the classifier can only raise from here.
+_TRIVIAL_QUESTION_MAX_CHARS = 140
+_TRIVIAL_QUESTION_STARTERS = ("what", "who", "when", "where", "which")
+
 
 def analyze_task(task: str) -> Dict[str, Any]:
     """Deterministic complexity analysis: map task text to a suggested tier.
@@ -316,6 +334,21 @@ def analyze_task(task: str) -> Dict[str, Any]:
     economy_hits = _hits(_ECONOMY_PATTERNS)
     if len(task or "") > _LONG_INPUT_CHARS:
         heavy_hits.append(f"long input (>{_LONG_INPUT_CHARS} chars)")
+
+    # Ultra-trivial Q&A shapes: bare arithmetic + short factual questions.
+    trivial_hits = _hits(_TRIVIAL_ARITHMETIC_PATTERNS)
+    stripped = (task or "").strip()
+    words = stripped.split()
+    if (
+        len(stripped) <= _TRIVIAL_QUESTION_MAX_CHARS
+        and stripped.endswith("?")
+        and words
+        and words[0].lower().rstrip(",") in _TRIVIAL_QUESTION_STARTERS
+    ):
+        trivial_hits.append(f"short {words[0].lower()}-question")
+    if stripped.lower().startswith("define ") and len(stripped) <= _TRIVIAL_QUESTION_MAX_CHARS:
+        trivial_hits.append("define-X")
+    economy_hits += trivial_hits
 
     reasons = [f"complexity signal: '{h}'" for h in heavy_hits]
     reasons += [f"trivial-task signal: '{h}'" for h in economy_hits]
@@ -761,6 +794,51 @@ class ShimHandler(BaseHTTPRequestHandler):
         pass  # quiet by default; the decision log records what matters
 
 
+# -- self-daemonization (Windows sshd job-object escape) --------------------
+#
+# sshd on Windows runs each session inside a Job Object with
+# KILL_ON_JOB_CLOSE. Node's `detached: true` cannot escape that job -- Node
+# exposes no way to set process creation flags -- so a shim spawned by the
+# ZCode CLI would die when the SSH session closes. The shim instead re-spawns
+# *itself* with CREATE_BREAKAWAY_FROM_JOB | DETACHED_PROCESS; the original
+# process exits immediately and the detached grandchild (outside the job)
+# serves. Non-Windows platforms are unaffected (Node's setsid() already
+# detaches there). Every failure path is fail-open: the shim simply keeps
+# running in-process.
+
+def _win32_detach(argv: list[str]) -> bool:
+    """Re-launch this shim detached on Windows.
+
+    Returns True when the caller must exit immediately (a detached copy was
+    started); False when the current process should keep serving -- not on
+    Windows, opted out, or the re-spawn failed (fail-open).
+    """
+    if sys.platform != "win32":
+        return False
+    try:
+        import subprocess
+
+        creationflags = getattr(subprocess, "CREATE_BREAKAWAY_FROM_JOB", 0) | getattr(
+            subprocess, "DETACHED_PROCESS", 0
+        )
+        if not creationflags:
+            return False
+        # --no-daemonize goes last so the grandchild does not respawn again
+        # (SYSTEMONE_DAEMONIZE is inherited through the environment).
+        cmd = [sys.executable, "-m", "systemone.shim", *argv, "--no-daemonize"]
+        subprocess.Popen(
+            cmd,
+            creationflags=creationflags,
+            close_fds=True,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+        return True
+    except Exception:
+        return False
+
+
 def serve(
     port: int = 8765,
     engine: SystemOne | None = None,
@@ -777,7 +855,26 @@ def serve(
 def main() -> None:
     parser = argparse.ArgumentParser(description="Local /v1/systemone shim server")
     parser.add_argument("--port", type=int, default=8765)
+    parser.add_argument(
+        "--daemonize",
+        action="store_true",
+        default=os.environ.get("SYSTEMONE_DAEMONIZE", "").strip() == "1",
+        help=(
+            "Windows only: re-spawn detached (break away from the sshd job "
+            "object) so the shim survives the parent SSH session. Fail-open; "
+            "no-op on other platforms."
+        ),
+    )
+    parser.add_argument(
+        "--no-daemonize",
+        dest="daemonize",
+        action="store_false",
+        help="Opt out of --daemonize / SYSTEMONE_DAEMONIZE.",
+    )
     args = parser.parse_args()
+    if args.daemonize and _win32_detach(sys.argv[1:]):
+        print("systemone shim detached; parent exiting")
+        return
     server = serve(args.port)
     print(
         f"systemone shim on http://127.0.0.1:{args.port}/v1/systemone "
