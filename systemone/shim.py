@@ -197,6 +197,37 @@ _CLASSIFIER_RAISE_CONFIDENCE = 0.65
 _DISAGREEMENT_PENALTY = 0.12
 _LONG_INPUT_CHARS = 2000
 
+# Coarse reasoning-effort hint derived from the routed tier, consumed by
+# downstream agent loops (ZCode CLI) to size reasoningLevel/maxOutputTokens.
+# economy -> low, balanced -> medium, heavy -> high.
+_TIER_EFFORT = {"economy": "low", "balanced": "medium", "heavy": "high"}
+
+# Deterministic keyword labels for the routed task. Deliberately short and
+# documented: downstream tool routing matches on these labels, not free text.
+# (keyword-group, label) pairs; groups are independent so a task can carry
+# several labels.
+_TASK_LABEL_KEYWORDS: tuple[tuple[tuple[str, ...], str], ...] = (
+    (("calendar", "meeting", "schedule", "appointment"), "calendar"),
+    (("email", "inbox", "gmail"), "email"),
+    (("debug", "bug", "stack trace", "race condition", "refactor"), "code"),
+    (("summar", "tldr", "recap"), "summarize"),
+    (("write", "draft", "compose"), "writing"),
+    (("file", "folder", "directory"), "files"),
+    (("search", "find", "lookup"), "search"),
+    (("image", "photo", "picture", "video"), "media"),
+    (("deploy", "server", "docker"), "ops"),
+)
+
+
+def task_labels_for(task: str) -> list:
+    """Small deterministic keyword labels for *task* (case-insensitive)."""
+    lowered = (task or "").lower()
+    return [
+        label
+        for keywords, label in _TASK_LABEL_KEYWORDS
+        if any(keyword in lowered for keyword in keywords)
+    ]
+
 # Obvious "this needs the strong model" markers (regexes over lowercased text).
 _HEAVY_PATTERNS = [
     r"debug(ging|ger)?s?\b",
@@ -354,8 +385,13 @@ def route_decision(
     registry lists tiers economy -> balanced -> heavy.
 
     Returns the {"model_id", "tier", "rationale", "confidence",
-    "probabilities", "cost_bias", "deterministic_tier", "signals"} route dict.
+    "probabilities", "cost_bias", "deterministic_tier", "signals", "effort",
+    "task_labels"} route dict.
     """
+    # The registry is a name->entry mapping with no guaranteed key order;
+    # sort candidates cheapest-first so the index math below is sound.
+    _order = {t: i for i, t in enumerate(_TIER_ORDER)}
+    candidates = sorted(candidates, key=lambda c: _order.get(c["tier"], 99))
     tiers = [c["tier"] for c in candidates]
     n = len(tiers)
     if n == 0:
@@ -438,6 +474,10 @@ def route_decision(
         "cost_bias": cost_bias,
         "deterministic_tier": det["tier"],
         "signals": det["reasons"],
+        # Effort hint for agent loops: coarse reasoning budget for this task.
+        "effort": _TIER_EFFORT.get(winner["tier"], "medium"),
+        # Deterministic keyword labels for tool routing (see _TASK_LABEL_KEYWORDS).
+        "task_labels": task_labels_for(task),
     }
 
 
