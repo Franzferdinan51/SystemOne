@@ -319,6 +319,35 @@ instead of inventing numbers.
 | `SYSTEMONE_INVENTORY_TTL` | LM Studio availability refresh seconds (tuning.json default 300) |
 | `GROK_LOCAL_SYSTEMONE*`, `ZCODE_SYSTEMONE`, `ZCODE_SPEEDSTACK_PRUNE` | product-side switches, unchanged |
 
+## Jeff-1 second decision head
+
+SystemOne's second decision head is **[Jeff-1](https://huggingface.co/GestaltLabs/Jeff-1)**,
+a [GestaltLabs](https://huggingface.co/GestaltLabs) open-weight model (Apache
+2.0): a LoRA adapter on **[Qwen/Qwen3-4B-Instruct-2507](https://huggingface.co/Qwen/Qwen3-4B-Instruct-2507)**
+(Alibaba Qwen team), trained for Jev-compatible typed decisions — `choice`,
+`score`, and `noul` outputs. Its published model-card metrics: accuracy 0.8183,
+macro-F1 0.7789, Brier 0.2839, ECE 0.0807.
+
+- **On by default.** Set `SYSTEMONE_JEFF1=0` to run GLiClass-only.
+- **Consulted for plan ranking and uncertain routes only.** `/route` with a
+  *certain* result never calls Jeff-1 (trivial tasks stay on the ~85 ms hot
+  path); `rank-plans` blends Jeff-1's P(plan succeeds | task) 50/50 with the
+  GLiClass score (`jeff1.blended` on the response), and *uncertain* routes
+  record an advisory `jeff1_second_opinion` — the routed tier is never
+  changed by it.
+- **Fail-open.** If the sidecar is unreachable, slow (past
+  `SYSTEMONE_JEFF1_TIMEOUT`), or disabled, the shim serves GLiClass-only
+  answers with `jeff1.consulted: false`. Sidecar-down and timeout behavior are
+  covered by unit tests.
+- **Deployment** comes in two flavors — decentralized (one sidecar on the Mac
+  mini serving the Mac and Windows shims over the tailnet) and single-device
+  (`systemone serve --with-jeff1`). See [Deployment topologies](#deployment-topologies)
+  for the setup, and [Jeff-1 knobs](#jeff-1-knobs) for every env variable.
+- **Your worker model is never touched.** Jeff-1 runs as its own sidecar
+  process on its own device budget (~8–9 GB headroom for the 4B bf16 base +
+  LoRA; on Apple Silicon this comes from unified memory). It never loads,
+  unloads, switches, or competes with your loaded LM Studio model.
+
 ## Deployment topologies
 
 SystemOne has two processes: the **shim** (`python -m systemone.shim`,
@@ -417,3 +446,18 @@ pip install -e .   # installs the local gliclass fork (from repo root)
 
 Then `python -m systemone.mcp_server` or import `systemone` anywhere.
 Set `PYTHONIOENCODING=utf-8` on Windows consoles.
+
+## Credits
+
+- **[GestaltLabs](https://huggingface.co/GestaltLabs)** — Jeff-1
+  ([GestaltLabs/Jeff-1](https://huggingface.co/GestaltLabs/Jeff-1), Apache 2.0),
+  the open-weight second decision head.
+- **Alibaba Qwen team** — [Qwen3-4B-Instruct-2507](https://huggingface.co/Qwen/Qwen3-4B-Instruct-2507),
+  the base model Jeff-1 adapts.
+- **[Knowledgator](https://huggingface.co/knowledgator)** — GLiClass checkpoints
+  (`knowledgator/gliclass-edge-v3.0`), the primary decision engine.
+- **TypeSafe Jev** — the typed-decision API design this project ports to local
+  hardware (Jev trains calibration in with RLCD; here it's post-hoc
+  temperature/Platt/isotonic calibration fit on the 250-task battery).
+- **Loki** — design principles ported from their Jev integration
+  (decider-never-crosses-trust-boundaries, fail-open at every stage).
