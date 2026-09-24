@@ -282,14 +282,20 @@ class SystemOne:
         label_lists: List[List[str]],
         prompts: List[str | None] | None = None,
         batch_size: int = 32,
+        classification_type: str = "single_label",
     ) -> List[Dict[str, float]]:
-        """One pipeline call; returns per-text {label: raw_score} dicts."""
+        """One pipeline call; returns per-text {label: raw_score} dicts.
+
+        classification_type="single_label" is winner-take-all (one nonzero
+        entry per text) — right for tier routing. "multi_label" scores every
+        label independently — right for tool/MCP relevance ranking.
+        """
         results = self.pipeline(
             texts,
             label_lists,
             threshold=0.0,
             batch_size=batch_size,
-            classification_type="single_label",
+            classification_type=classification_type,
             prompt=prompts,
         )
         out: List[Dict[str, float]] = []

@@ -21,6 +21,8 @@ Endpoints:
     POST /v1/systemone        TypeSafe dialect (see below)
     POST /v1/systemone/route  model router: pick the cheapest sufficient
                               local tier for a task (see below)
+    POST /v1/systemone/rank-plans
+                              rank candidate plans for a task (see below)
     GET  /healthz, /           liveness
 
 Request body for /v1/systemone (TypeSafe dialect):
@@ -90,10 +92,29 @@ from logging.handlers import RotatingFileHandler
 from typing import Any, Dict, List, Optional
 
 from .api import MAX_STATE_CHARS, SystemOne, validate_choice
+from .scoring import (
+    apply_calibration,
+    apply_inventory,
+    cost_lambda,
+    disabled as scoring_disabled,
+    estimate_steps,
+    fetch_lmstudio_models,
+    load_calibration,
+    load_tool_registry,
+    model_top_n,
+    rank_models,
+    rank_plans,
+    score_tools,
+    start_inventory_refresher,
+    tool_floor,
+    tool_topk,
+)
 
 # -- model router -----------------------------------------------------------
 
 REGISTRY_PATH = os.path.join(os.path.dirname(__file__), "model_registry.json")
+CALIBRATION_PATH = os.path.join(os.path.dirname(__file__), "calibration.json")
+TOOL_REGISTRY_PATH = os.path.join(os.path.dirname(__file__), "tool_registry.json")
 
 COST_BIAS_POLICIES = {
     "economy": "Aggressively prefer the cheapest tier that is still sufficiently capable.",
@@ -233,7 +254,8 @@ def task_labels_for(task: str) -> list:
 _HEAVY_PATTERNS = [
     r"debug(ging|ger)?s?\b",
     r"deadlock",
-    r"race condition",
+    r"\brac(e condition|ing)\b",
+    r"thread[- ]?safe\b",
     r"stack ?trace",
     r"traceback",
     r"segfault",
@@ -241,14 +263,18 @@ _HEAVY_PATTERNS = [
     r"multithread",
     r"concurren\w*",
     r"distributed",
+    r"\bcrdt\b",
     r"refactor",
+    r"restructur\w*",
+    r"\b\d+\s*-line\b",
     r"architect(ure)?",
     r"theorem",
     r"\bproof\b",
     r"\bprov(e|ing)\b",
     r"calculus",
     r"\bintegral\b",
-    r"differential equation",
+    r"\bdifferential\b",
+    r"\bdy/dx\b",
     r"linear algebra",
     r"cryptograph",
     r"compiler",
@@ -259,7 +285,13 @@ _HEAVY_PATTERNS = [
     r"compliance",
     r"medical",
     r"diagnos(is|ed|ing|tic)\b",
+    r"financial (report|filing)",
+    r"annual report",
+    r"\b\d+\s*-page\b",
+    r"\bsolvency\b",
     r"security audit",
+    r"\baudit\b.*\bsecur",
+    r"\bsecur\w* flaw",
     r"vulnerab",
     r"\bexploit\b",
     r"penetration test",
@@ -270,15 +302,19 @@ _HEAVY_PATTERNS = [
     r"\bnavigat\w*\b",
     r"\bscrol\w*\b",
     r"\bbrowser (automation|navigat\w*|tool\w*|agent\w*)\b",
+    r"page through",
+    r"\bautomat\w* this\b",
     r"system design",
     r"design a (system|distributed)",
     r"roadmap",
     r"performance tun",
 ]
 
-# Obvious "the tiny model is plenty" markers.
+# Obvious "the tiny model is plenty" markers. The summariz pattern carries a
+# negative lookahead: extractive/brevity-scoped summarization is trivial,
+# but analytical summarization ("causes of", "compare", ...) is not.
 _ECONOMY_PATTERNS = [
-    r"summariz",
+    r"summariz\w*\b(?!.*\b(causes|compare|contrast|versus|pros and cons|explain why)\b)",
     r"\bsummary\b",
     r"tl;?dr\b",
     r"one[- ]sentence",
@@ -298,12 +334,38 @@ _ECONOMY_PATTERNS = [
 # Ultra-trivial Q&A: bare arithmetic and short factual questions. Single-lookup
 # tasks where the cheapest tier is plenty. Kept separate from _ECONOMY_PATTERNS
 # because the short-question rule also needs a length + shape check (below).
+# Single-lookup shapes only — the imperative forms ("Name the capital...",
+# "Multiply 17 by 23.", "Convert 3 km to miles.") are just as trivial as the
+# interrogative ones. The short-question rule below excludes open-ended
+# advice/explanation questions (see _NONTRIVIAL_QUESTION_MARKERS).
 _TRIVIAL_ARITHMETIC_PATTERNS = [
     r"\d+\s*[+\-*/^]\s*\d+",  # bare arithmetic expression: 2+2, 3 * 4
     r"\bwhat is [\d][\d\s+\-*/().^%]*\??",  # "what is 2+2?"
     r"\bcalculat\w*\b",
+    r"\bcompute\b",
+    r"\b(multiply|divide)\b",
+    r"\b(find|compute|calculate)\b.*\bpercent of\b",
+    r"\bconvert\b.*\b(miles|kilometers|km|ounces|pounds|kg|grams|celsius|fahrenheit|inches|feet|meters)\b",
     r"\bhow much is\b",
     r"\bhow many\b",
+    r"^name the\b",
+]
+
+# Markers that disqualify a short "What/Who/...?" from the trivial rule: the
+# question asks for advice, recommendations, comparison, or an explanation —
+# not a single lookup fact.
+_NONTRIVIAL_QUESTION_MARKERS = [
+    r"\bstrategies\b",
+    r"\badvice\b",
+    r"\btips\b",
+    r"\bshould i\b",
+    r"\bpros and cons\b",
+    r"\badvantages and disadvantages\b",
+    r"\bwhat makes\b",
+    r"\bwhat happens when\b",
+    r"\bmust-see\b",
+    r"\bgifts?\b",
+    r"\bwhat gear\b",
 ]
 
 # Short factual questions ("What/Who/When/Where/Which ...?") under this length
@@ -336,6 +398,9 @@ def analyze_task(task: str) -> Dict[str, Any]:
         heavy_hits.append(f"long input (>{_LONG_INPUT_CHARS} chars)")
 
     # Ultra-trivial Q&A shapes: bare arithmetic + short factual questions.
+    # Heavy patterns still win on conflict (substance over form), and the
+    # classifier can only raise from here. Advice/explanation/recommendation
+    # questions are NOT single lookups, even when short and What-led.
     trivial_hits = _hits(_TRIVIAL_ARITHMETIC_PATTERNS)
     stripped = (task or "").strip()
     words = stripped.split()
@@ -344,6 +409,7 @@ def analyze_task(task: str) -> Dict[str, Any]:
         and stripped.endswith("?")
         and words
         and words[0].lower().rstrip(",") in _TRIVIAL_QUESTION_STARTERS
+        and not _hits(_NONTRIVIAL_QUESTION_MARKERS)
     ):
         trivial_hits.append(f"short {words[0].lower()}-question")
     if stripped.lower().startswith("define ") and len(stripped) <= _TRIVIAL_QUESTION_MAX_CHARS:
@@ -401,6 +467,7 @@ def route_decision(
     task: str,
     candidates: List[Dict[str, str]],
     cost_bias: str,
+    scoring: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     """Pick the cheapest sufficient tier for *task*.
 
@@ -417,9 +484,16 @@ def route_decision(
     Candidate order is capability order (cheapest first); the bundled
     registry lists tiers economy -> balanced -> heavy.
 
+    When `scoring` is provided ({"calibration": ...|None, "tools": [...],
+    "registry": {...}}), the route dict additionally gains the calibrated
+    decision surface: calibrated_probabilities, margin, uncertain,
+    ranked_models, ranked_tools/tool_scoring. confidence becomes the
+    calibrated P(top1). Without `scoring` the legacy shape is returned
+    unchanged (backward compatible).
+
     Returns the {"model_id", "tier", "rationale", "confidence",
     "probabilities", "cost_bias", "deterministic_tier", "signals", "effort",
-    "task_labels"} route dict.
+    "task_labels", ...} route dict.
     """
     # The registry is a name->entry mapping with no guaranteed key order;
     # sort candidates cheapest-first so the index math below is sound.
@@ -498,7 +572,8 @@ def route_decision(
         + "; ".join(notes)
         + f" (final confidence {conf:.2f})."
     )
-    return {
+    effort = _TIER_EFFORT.get(winner["tier"], "medium")
+    route: Dict[str, Any] = {
         "model_id": winner["model_id"],
         "tier": winner["tier"],
         "rationale": rationale,
@@ -508,10 +583,83 @@ def route_decision(
         "deterministic_tier": det["tier"],
         "signals": det["reasons"],
         # Effort hint for agent loops: coarse reasoning budget for this task.
-        "effort": _TIER_EFFORT.get(winner["tier"], "medium"),
+        "effort": effort,
         # Deterministic keyword labels for tool routing (see _TASK_LABEL_KEYWORDS).
         "task_labels": task_labels_for(task),
     }
+    if scoring is not None:
+        _apply_scoring(engine, task, route, blended, scoring)
+    return route
+
+
+_EFFORT_LEVELS = ("low", "medium", "high")
+
+
+def _apply_scoring(
+    engine: Any,
+    task: str,
+    route: Dict[str, Any],
+    blended: Dict[str, float],
+    scoring: Dict[str, Any],
+) -> None:
+    """Additive decision surface; mutates `route`. Never raises.
+
+    - calibrated_probabilities / margin / uncertain / calibrated; confidence
+      becomes the calibrated P(top1).
+    - uncertain -> effort bumps one level (low->medium->high).
+    - ranked_models: top-3 available by expected utility (advisory).
+    - ranked_tools: relevance-ranked tools, top-k with relevance >= floor;
+      skipped (cheap path) when uncertain or effort is low.
+    """
+    try:
+        cal = apply_calibration(blended, scoring.get("calibration"))
+        route["calibrated"] = cal["calibrated"]
+        route["calibrated_probabilities"] = cal["calibrated_probabilities"]
+        route["margin"] = cal["margin"]
+        route["uncertain"] = cal["uncertain"]
+        route["confidence"] = cal["confidence"]
+
+        effort = route.get("effort", "medium")
+        if cal["uncertain"] and effort in _EFFORT_LEVELS:
+            bumped = _EFFORT_LEVELS[min(2, _EFFORT_LEVELS.index(effort) + 1)]
+            if bumped != effort:
+                route["effort"] = bumped
+                route["rationale"] += (
+                    f" Uncertain (margin {cal['margin']:.2f} < floor); "
+                    f"effort bumped to {bumped}, no tool pruning."
+                )
+
+        registry = scoring.get("registry") or {}
+        try:
+            route["ranked_models"] = rank_models(
+                registry, cal["calibrated_probabilities"],
+                topn=model_top_n())
+        except Exception:
+            route["ranked_models"] = []
+
+        # Cheap path: don't burn an engine call deciding tools for a task
+        # we're unsure about or that needs barely any reasoning.
+        if cal["uncertain"] or route.get("effort") == "low":
+            route["ranked_tools"] = []
+            route["tool_scoring"] = "skipped"
+            return
+        tools = scoring.get("tools") or []
+        try:
+            ranked = score_tools(engine, task, tools)
+        except Exception:
+            ranked = []
+        floor, topk = tool_floor(), tool_topk()
+        # No floor/topk configured -> unfiltered (fail-open, never prune blind).
+        ranked_tools = ranked if floor is None else [
+            t for t in ranked if t["relevance"] >= floor
+        ]
+        route["ranked_tools"] = ranked_tools if topk is None else ranked_tools[:topk]
+        route["tool_scoring"] = "full"
+    except Exception:
+        # Fail open: scoring must never break the route consumers rely on.
+        route.setdefault("ranked_models", [])
+        route.setdefault("ranked_tools", [])
+        route.setdefault("tool_scoring", "skipped")
 
 
 # -- latency logging --------------------------------------------------------
@@ -735,13 +883,68 @@ class ShimHandler(BaseHTTPRequestHandler):
             "latency_ms": answers.get("_meta", {}).get("latency_ms"),
         }
 
+    def _scoring_ctx(self) -> Dict[str, Any]:
+        return {
+            "calibration": getattr(self.server, "calibration", None),
+            "tools": getattr(self.server, "tools", []),
+            "registry": getattr(self.server, "registry", {}),
+        }
+
     def _handle_route(self) -> tuple[int, Dict[str, Any]]:
         """POST /v1/systemone/route -> (status, payload)."""
         body = self._read_body()
         task, cost_bias, candidates = parse_route_body(body, self.server.registry)
-        route = route_decision(self.server.engine, task, candidates, cost_bias)
+        route = route_decision(
+            self.server.engine, task, candidates, cost_bias,
+            scoring=self._scoring_ctx(),
+        )
         return 200, {
             "route": route,
+            "model": self.server.engine.model_name,
+            "usage": {},
+        }
+
+    def _handle_rank_plans(self) -> tuple[int, Dict[str, Any]]:
+        """POST /v1/systemone/rank-plans -> (status, payload).
+
+        Body: {"task": "...", "plans": [{"id": "...", "text": "..."}, ...]}.
+        Scores each plan's P(success | task) with the zero-shot head minus a
+        cost penalty (est_steps x routed-tier cost, normalized). The ranking
+        (not just the winner) is returned for the run log.
+        """
+        body = self._read_body()
+        task = body.get("task")
+        if not isinstance(task, str) or not task.strip():
+            raise ValueError("request must include a non-empty 'task' string")
+        plans = body.get("plans")
+        if not isinstance(plans, list) or not plans:
+            raise ValueError("'plans' must be a non-empty list")
+        for p in plans:
+            if not isinstance(p, dict) or not isinstance(p.get("text"), str):
+                raise ValueError("each plan must be a mapping with a 'text' string")
+        _, _, candidates = parse_route_body(
+            {"task": task.strip()}, self.server.registry)
+        route = route_decision(
+            self.server.engine, task.strip(), candidates, "balanced",
+            scoring=self._scoring_ctx(),
+        )
+        tier_cost = None
+        reg = self.server.registry or {}
+        tiers = reg.get("tiers", reg) if isinstance(reg, dict) else {}
+        entry = tiers.get(route["tier"]) if isinstance(tiers, dict) else None
+        if isinstance(entry, dict):
+            for m in entry.get("models", []) or []:
+                if isinstance(m, dict) and m.get("model_id") == route["model_id"]:
+                    try:
+                        tier_cost = float(m["cost"])
+                    except (KeyError, TypeError, ValueError):
+                        pass
+                    break
+        ranking = rank_plans(self.server.engine, task.strip(), plans, tier_cost)
+        return 200, {
+            "task": task.strip(),
+            "tier": route["tier"],
+            "ranking": ranking,
             "model": self.server.engine.model_name,
             "usage": {},
         }
@@ -756,7 +959,14 @@ class ShimHandler(BaseHTTPRequestHandler):
         t0 = time.perf_counter()
         status, payload, extra = 500, {"error": "internal"}, {}
         try:
-            if self.path == "/v1/systemone":
+            if scoring_disabled() and self.path in (
+                "/v1/systemone/route", "/v1/systemone/rank-plans"
+            ):
+                # Kill switch: refuse routing; upstream consumers fail open.
+                status, payload = 503, {
+                    "error": "systemone routing disabled (SYSTEMONE_DISABLE=1)"
+                }
+            elif self.path == "/v1/systemone":
                 status, payload = self._handle_systemone()
                 extra = {"n_questions": len(payload.get("answers", {}))}
             elif self.path == "/v1/systemone/route":
@@ -767,10 +977,17 @@ class ShimHandler(BaseHTTPRequestHandler):
                     "route_model": route.get("model_id"),
                     "route_confidence": route.get("confidence"),
                 }
+            elif self.path == "/v1/systemone/rank-plans":
+                status, payload = self._handle_rank_plans()
+                extra = {
+                    "n_plans": len(payload.get("ranking", [])),
+                    "top_plan": (payload.get("ranking") or [{}])[0].get("id"),
+                }
             else:
                 status = 404
                 payload = {
-                    "error": "not found, POST /v1/systemone or /v1/systemone/route"
+                    "error": "not found, POST /v1/systemone, "
+                             "/v1/systemone/route or /v1/systemone/rank-plans"
                 }
         except (ValueError, KeyError) as e:
             status, payload = 400, {"error": f"bad request: {e}"}
@@ -844,11 +1061,31 @@ def serve(
     engine: SystemOne | None = None,
     registry: Dict[str, Dict[str, Any]] | None = None,
 ) -> ThreadingHTTPServer:
-    """Build (but do not block on) the shim server."""
+    """Build (but do not block on) the shim server.
+
+    Loads calibration.json (temperature for the blended tier distribution;
+    absent -> serve raw, calibrated=false) and tool_registry.json. Starts a
+    daemon thread refreshing model availability from the LM Studio inventory
+    (fail-open; registry values stand when LM Studio is unreachable).
+    """
     engine = engine or SystemOne(model_name=os.environ.get("SYSTEMONE_MODEL"))
     server = ThreadingHTTPServer(("127.0.0.1", port), ShimHandler)
     server.engine = engine  # type: ignore[attr-defined]
-    server.registry = registry if registry is not None else load_registry()  # type: ignore[attr-defined]
+    reg = registry if registry is not None else load_registry()
+    server.registry = reg  # type: ignore[attr-defined]
+    server.calibration = load_calibration(CALIBRATION_PATH)  # type: ignore[attr-defined]
+    server.tools = load_tool_registry(TOOL_REGISTRY_PATH)  # type: ignore[attr-defined]
+    # One quick inventory probe at startup (fail-open), then background refresh.
+    try:
+        ids = fetch_lmstudio_models()
+        if ids is not None:
+            apply_inventory(reg, ids)
+    except Exception:
+        pass
+    try:
+        start_inventory_refresher(reg)
+    except Exception:
+        pass
     return server
 
 

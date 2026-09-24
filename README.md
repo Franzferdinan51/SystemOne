@@ -217,6 +217,96 @@ TypeSafe's confidence model, adapted for local use:
   operation is gated higher than a read-only one. 0.5 is the floor that
   catches genuine uncertainty; your code encodes the risk tolerance above it.
 
+## Scoring & ranking (shim decision surface)
+
+`POST /v1/systemone/route` returns an additive decision surface — everything
+below is extra fields on the existing `route` object, so old consumers keep
+working unchanged:
+
+```json
+{"route": {
+  "tier": "balanced", "model_id": "ornith-1.5-9b",
+  "confidence": 0.74, "calibrated": true,
+  "probabilities": {"economy": 0.18, "balanced": 0.54, "heavy": 0.28},
+  "calibrated_probabilities": {"economy": 0.22, "balanced": 0.51, "heavy": 0.27},
+  "margin": 0.24, "uncertain": false,
+  "effort": "medium", "task_labels": ["writing"],
+  "ranked_models": [{"model_id": "ornith-1.5-9b", "tier": "balanced",
+                     "utility": 0.71, "quality": 0.76, "cost": 1.0}],
+  "ranked_tools": [{"id": "browserclaw", "kind": "mcp", "relevance": 0.82}],
+  "tool_scoring": "full"}
+}
+```
+
+- **Calibration** (`systemone/calibration.json`, fit offline by
+  `systemone/battery/fit.py` from the labeled battery with 5-fold CV):
+  `calibrated_probabilities` is the temperature-scaled tier distribution,
+  `margin` is P(top1) − P(top2), and `uncertain` is true when the margin is
+  under `SYSTEMONE_MARGIN_FLOOR` (default 0.15). `confidence` is the
+  calibrated P(top1) — the old heuristic is gone, so the 0.8 pruning
+  threshold consumers use now means what it says. Without a calibration
+  file the shim serves raw scores and marks `"calibrated": false`.
+- **Model ranking**: each registry tier carries a `models[]` list
+  (`quality` per tier mix, `cost`, `latency_ms_p50`, `vram_gb`,
+  `available`). `ranked_models` is the top-3 available models by expected
+  utility `U(m) = Σ_t P(t)·quality(m,t) − λ·cost(m)` with
+  `SYSTEMONE_COST_LAMBDA` (default 0.15). Advisory only — SystemOne never
+  loads or switches models; a pinned model always wins. `available` is
+  refreshed from the LM Studio inventory (`GET /v1/models`, 1.5s timeout,
+  background refresh every `SYSTEMONE_INVENTORY_TTL` seconds, default 300);
+  when LM Studio is unreachable the registry values stand.
+- **Tool/MCP ranking** (`systemone/tool_registry.json`): GLiClass zero-shot
+  relevance per tool/MCP server, one batched engine call, filtered to
+  `relevance >= SYSTEMONE_TOOL_FLOOR` (default 0.30), top
+  `SYSTEMONE_TOOL_TOPK` (default 8). Cheap path: when `uncertain` is true or
+  effort is `low`, tool scoring is skipped — `ranked_tools: []` with
+  `"tool_scoring": "skipped"`. Consumer rule: `uncertain == true` → no
+  tool/MCP pruning, effort bumps one level (low→medium→high).
+- **Plan ranking**: `POST /v1/systemone/rank-plans` with
+  `{"task": "...", "plans": [{"id": "...", "text": "..."}]}` returns the
+  plans ranked by `score = P(plan succeeds | task) − cost_penalty`
+  (`est_steps × routed-tier cost / 100`), each with `p_success`,
+  `cost_penalty`, `est_steps`. Execute the top plan unless pinned; log the
+  whole ranking.
+
+### Calibration battery (regression suite)
+
+`systemone/battery/`: 250 hand-labeled tasks (`tasks.jsonl`, ~40% economy /
+~35% balanced / ~25% heavy) plus `run.py`, the regression runner:
+
+```bash
+python3 systemone/battery/run.py --base-url http://127.0.0.1:8765  # full asserts
+python3 systemone/battery/run.py --mode live --base-url http://127.0.0.1:8765
+python3 systemone/battery/fit.py --base-url http://127.0.0.1:18765  # -> calibration.json
+```
+
+Asserts: tier accuracy ≥ 0.80 (warn < 0.85), ECE (10-bin, calibrated top-1)
+≤ 0.10, p50 ≤ 500ms / p95 ≤ 2000ms, schema regression on all response keys,
+and no tier regressions vs `battery/last_run.json`. `run.py` is stdlib-only
+so it runs anywhere (including over ssh on the Windows PC); `--mode live`
+runs the read-only subset against older shims.
+
+### Tuning config
+
+All scoring/ranking tuning knobs live in `systemone/tuning.json` — the
+single source of tuning defaults. Each key documents its `SYSTEMONE_*`
+environment override. Choice order: router decision → registry/config
+(`tuning.json`) → explicit user configuration (env). No model IDs or tuning
+defaults are hard-coded in the implementation code; if `tuning.json` is
+missing, the affected surfaces degrade gracefully (features off / unfiltered)
+instead of inventing numbers.
+
+### Kill switches
+
+| Variable | Effect |
+|---|---|
+| `SYSTEMONE_DISABLE=1` | `/route` and `/rank-plans` return 503; upstream consumers fail open |
+| `SYSTEMONE_MARGIN_FLOOR` | uncertainty threshold on the calibrated margin (tuning.json default 0.15) |
+| `SYSTEMONE_COST_LAMBDA` | cost weight in model expected-utility (tuning.json default 0.15) |
+| `SYSTEMONE_TOOL_FLOOR` / `SYSTEMONE_TOOL_TOPK` | tool relevance floor / top-k (tuning.json defaults 0.30 / 8) |
+| `SYSTEMONE_INVENTORY_TTL` | LM Studio availability refresh seconds (tuning.json default 300) |
+| `GROK_LOCAL_SYSTEMONE*`, `ZCODE_SYSTEMONE`, `ZCODE_SPEEDSTACK_PRUNE` | product-side switches, unchanged |
+
 ## Fail-open & trust boundaries
 
 Principles ported from Loki's Jev integration:
