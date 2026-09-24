@@ -22,7 +22,10 @@ Endpoints:
     POST /v1/systemone/route  model router: pick the cheapest sufficient
                               local tier for a task (see below)
     POST /v1/systemone/rank-plans
-                              rank candidate plans for a task (see below)
+                              rank candidate plans for a task (see below);
+                              consults the Jeff-1 sidecar when enabled and
+                              blends its P(plan succeeds | task) 50/50 with
+                              the GLiClass scores (fail-open)
     GET  /healthz, /           liveness
 
 Request body for /v1/systemone (TypeSafe dialect):
@@ -108,6 +111,12 @@ from .scoring import (
     start_inventory_refresher,
     tool_floor,
     tool_topk,
+)
+from .jeff1 import (
+    blend_rankings,
+    jeff1_enabled,
+    rank_plans_via_jeff1,
+    second_opinion as jeff1_second_opinion,
 )
 
 # -- model router -----------------------------------------------------------
@@ -629,6 +638,18 @@ def _apply_scoring(
                     f"effort bumped to {bumped}, no tool pruning."
                 )
 
+        # Jeff-1 second head (uncertain routes only): record an advisory
+        # tier second opinion on the route. Never changes the routed tier.
+        if cal["uncertain"] and jeff1_enabled():
+            opinion = _jeff1_second_opinion(task, route, cal, scoring)
+            if opinion is not None:
+                route["jeff1_second_opinion"] = opinion
+                if not opinion.get("agree", True):
+                    route["rationale"] += (
+                        " Jeff-1 second opinion disagrees (advisory; tier "
+                        f"unchanged): {opinion.get('rationale', '')}"
+                    )
+
         registry = scoring.get("registry") or {}
         try:
             route["ranked_models"] = rank_models(
@@ -660,6 +681,50 @@ def _apply_scoring(
         route.setdefault("ranked_models", [])
         route.setdefault("ranked_tools", [])
         route.setdefault("tool_scoring", "skipped")
+
+
+def _jeff1_second_opinion(
+    task: str,
+    route: Dict[str, Any],
+    cal: Dict[str, Any],
+    scoring: Dict[str, Any],
+) -> Optional[Dict[str, Any]]:
+    """Fetch Jeff-1's advisory tier second opinion; None on any failure.
+
+    Builds the candidate list from the scoring registry and hands the
+    uncertain route summary to the sidecar. Pure fail-open: every error
+    path returns None so the route stands on the GLiClass judgment alone.
+    """
+    try:
+        registry = scoring.get("registry") or {}
+        tiers = registry.get("tiers", registry) \
+            if isinstance(registry, dict) else {}
+        candidates = [
+            {"tier": name, "description": str(entry.get("description", ""))}
+            for name, entry in tiers.items()
+            if isinstance(name, str) and isinstance(entry, dict)
+        ]
+        if not candidates:
+            return None
+        result = jeff1_second_opinion(
+            task,
+            {
+                "tier": route.get("tier"),
+                "confidence": cal.get("confidence"),
+                "margin": cal.get("margin"),
+                "candidates": candidates,
+            },
+        )
+        if not isinstance(result, dict) or not result.get("tier"):
+            return None
+        return {
+            "tier": result["tier"],
+            "confidence": result.get("confidence"),
+            "agree": bool(result.get("agree")),
+            "rationale": str(result.get("rationale", "")),
+        }
+    except Exception:
+        return None
 
 
 # -- latency logging --------------------------------------------------------
@@ -941,10 +1006,25 @@ class ShimHandler(BaseHTTPRequestHandler):
                         pass
                     break
         ranking = rank_plans(self.server.engine, task.strip(), plans, tier_cost)
+        jeff1: Dict[str, Any] = {"consulted": False, "latency_ms": None,
+                                 "blended": False}
+        if jeff1_enabled():
+            t0 = time.perf_counter()
+            stub_plans = [
+                {"id": p.get("id", f"plan_{i}"), "text": p.get("text") or ""}
+                for i, p in enumerate(plans)
+            ]
+            jeff_ranking = rank_plans_via_jeff1(task.strip(), stub_plans)
+            jeff1["latency_ms"] = round((time.perf_counter() - t0) * 1000.0, 1)
+            if jeff_ranking is not None:
+                ranking = blend_rankings(ranking, jeff_ranking, tier_cost)
+                jeff1["consulted"] = True
+                jeff1["blended"] = True
         return 200, {
             "task": task.strip(),
             "tier": route["tier"],
             "ranking": ranking,
+            "jeff1": jeff1,
             "model": self.server.engine.model_name,
             "usage": {},
         }

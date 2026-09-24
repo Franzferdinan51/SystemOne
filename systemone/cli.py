@@ -120,6 +120,45 @@ def cmd_ask(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_serve(args: argparse.Namespace) -> int:
+    """Run the shim; --with-jeff1 also starts the Jeff-1 sidecar.
+
+    Single-device story: one command brings up the GLiClass router shim on
+    --port and the Jeff-1 sidecar on --jeff1-port, both in the foreground.
+    Ctrl-C stops the shim and terminates the sidecar subprocess.
+    """
+    import subprocess
+
+    procs = []
+    try:
+        if args.with_jeff1:
+            env = dict(os.environ)
+            env.setdefault("JEFF1_PORT", str(args.jeff1_port))
+            proc = subprocess.Popen(
+                [sys.executable, "-m", "systemone.jeff1_sidecar",
+                 "--port", str(args.jeff1_port)],
+                env=env,
+            )
+            procs.append(proc)
+            print(f"jeff-1 sidecar starting on http://127.0.0.1:{args.jeff1_port} "
+                  f"(pid {proc.pid}; model loads lazily on first request)")
+        from .shim import serve as shim_serve
+
+        server = shim_serve(args.port)
+        print(f"systemone shim on http://127.0.0.1:{args.port}/v1/systemone "
+              f"and /v1/systemone/route (model {server.engine.model_name})")
+        server.serve_forever()
+    except KeyboardInterrupt:
+        print("\nshutting down")
+    finally:
+        for proc in procs:
+            try:
+                proc.terminate()
+            except Exception:
+                pass
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="systemone", description="Local System One CLI")
     sub = parser.add_subparsers(dest="cmd", required=True)
@@ -135,6 +174,15 @@ def main(argv: list[str] | None = None) -> int:
                        help='JSON file with [{"id","type","instructions","criteria"}] or "-" for stdin')
     p_ask.add_argument("--model", default=None, help="GLiClass checkpoint (default: env/smallest)")
     p_ask.set_defaults(func=cmd_ask)
+
+    p_serve = sub.add_parser("serve", help="run the shim server (foreground)")
+    p_serve.add_argument("--port", type=int, default=8765,
+                         help="shim port (default 8765)")
+    p_serve.add_argument("--with-jeff1", action="store_true",
+                         help="also start the Jeff-1 sidecar as a subprocess")
+    p_serve.add_argument("--jeff1-port", type=int, default=8079,
+                         help="Jeff-1 sidecar port (default 8079)")
+    p_serve.set_defaults(func=cmd_serve)
 
     args = parser.parse_args(argv)
     return int(args.func(args) or 0)

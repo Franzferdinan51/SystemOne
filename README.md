@@ -83,6 +83,18 @@ eng.set_calibrator(cal)   # systemone() now returns calibrated probabilities
   `python -m systemone.shim [--port 8765]`, then point the agent's
   `post_json` URL at `http://127.0.0.1:8765/v1/systemone`. The only change
   on their side is the endpoint string.
+- **`jeff1.py`** — shim-side client for the Jeff-1 second decision head
+  (stdlib-only HTTP): `jeff1_enabled()`, `rank_plans_via_jeff1()`,
+  `second_opinion()`, `blend_rankings()`. On by default
+  (`SYSTEMONE_JEFF1=1`), fail-open on every error path. `/route` consults
+  it only on uncertain routes (advisory; never changes the tier);
+  `/rank-plans` blends its `P(plan succeeds | task)` 50/50 with the
+  GLiClass scores.
+- **`jeff1_sidecar.py`** — standalone stdlib HTTP server hosting
+  GestaltLabs/Jeff-1 (LoRA on Qwen3-4B-Instruct-2507) as the second head:
+  `POST /v1/jeff1/rank-plans`, `POST /v1/jeff1/second-opinion`,
+  `GET /healthz`. Lazy model load (~8–9 GB), CUDA → MPS → CPU. See
+  "Deployment topologies" below.
 - **`distill.py`** — label with a teacher (`SyntheticTeacher`, `HFTeacher`,
   `LMStudioTeacher` — one local model at a time), write training JSON,
   fine-tune the edge student via the repo's `train.py`.
@@ -306,6 +318,67 @@ instead of inventing numbers.
 | `SYSTEMONE_TOOL_FLOOR` / `SYSTEMONE_TOOL_TOPK` | tool relevance floor / top-k (tuning.json defaults 0.30 / 8) |
 | `SYSTEMONE_INVENTORY_TTL` | LM Studio availability refresh seconds (tuning.json default 300) |
 | `GROK_LOCAL_SYSTEMONE*`, `ZCODE_SYSTEMONE`, `ZCODE_SPEEDSTACK_PRUNE` | product-side switches, unchanged |
+
+## Deployment topologies
+
+SystemOne has two processes: the **shim** (`python -m systemone.shim`,
+the GLiClass router on :8765) and the **Jeff-1 sidecar**
+(`python -m systemone.jeff1_sidecar`, GestaltLabs/Jeff-1 as an advisory
+second decision head on :8079). The head is **on by default** and
+fail-open: if the sidecar is unreachable, slow, or disabled, the shim
+serves GLiClass-only answers with `jeff1.consulted: false` and no added
+latency beyond the fast refusal. Hot-path rule: `/route` with a *certain*
+result never calls Jeff-1; only `rank-plans` and *uncertain* routes
+consult it. The second opinion is advisory — it never changes the routed
+tier.
+
+Jeff-1 needs ~8–9 GB of device memory (4B bf16 base + LoRA adapter), so it
+runs **once**, on the Mac mini — never on the Windows PC, whose VRAM is
+reserved for the loaded worker model.
+
+### (a) Decentralized (production)
+
+One sidecar on the Mac mini; every shim points at it.
+
+Mac mini (sidecar + shim), as `duckets`:
+
+```bash
+nohup python3.11 -m systemone.jeff1_sidecar --port 8079 >/tmp/jeff1.log 2>&1 &
+nohup python3.11 -m systemone.shim --port 8765 >/tmp/sysone-shim.log 2>&1 &
+```
+
+(The shim defaults to `SYSTEMONE_JEFF1_URL=http://127.0.0.1:8079`, so the
+Mac needs no extra config.)
+
+Windows PC (shim only), user-level env:
+
+```powershell
+[Environment]::SetEnvironmentVariable("SYSTEMONE_JEFF1_URL", "http://100.68.208.113:8079", "User")
+```
+
+then start/restart the shim as usual. `100.68.208.113` is the Mac mini's
+Tailscale IP; the sidecar binds loopback on the Mac, so Windows reaches it
+over the tailnet.
+
+### (b) Single-device (one box does everything)
+
+```bash
+python -m systemone.cli serve --port 8765 --with-jeff1 --jeff1-port 8079
+```
+
+Starts the sidecar as a subprocess, then the shim in the foreground;
+Ctrl-C stops both. The default `SYSTEMONE_JEFF1_URL` (localhost) just works.
+
+### Jeff-1 knobs
+
+| Variable | Default | Effect |
+|---|---|---|
+| `SYSTEMONE_JEFF1` | `1` (on) | `0` disables the head everywhere; the shim never dials the sidecar |
+| `SYSTEMONE_JEFF1_URL` | `http://127.0.0.1:8079` | sidecar base URL (set to the Mac's tailnet IP on other machines) |
+| `SYSTEMONE_JEFF1_TIMEOUT` | `2.5` | per-request seconds; a slow sidecar degrades to GLiClass-only |
+| `SYSTEMONE_JEFF1_BLEND` | `0.5` | Jeff-1 weight in the plan blend: `p = (1−w)·gliclass + w·jeff1` |
+| `JEFF1_ADAPTER_ID` / `JEFF1_BASE_ID` | `GestaltLabs/Jeff-1` / `Qwen/Qwen3-4B-Instruct-2507` | sidecar model ids (env-overridable, never hard-coded) |
+| `JEFF1_DEVICE` | auto (cuda → mps → cpu) | sidecar device override |
 
 ## Fail-open & trust boundaries
 
