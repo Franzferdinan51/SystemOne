@@ -6,6 +6,28 @@ Jev is a closed API that returns typed decisions with calibrated probabilities
 hardware: tiny open models (Apache-2.0, 32M–439M params), one batched call,
 honest probabilities.
 
+## What's new (September 2026)
+
+The consolidated end-of-program snapshot. SystemOne is no longer just the
+decision engine behind an API — the full scored decision surface is now baked
+into shipping products:
+
+- **Scored route surface** — `POST /v1/systemone/route` returns calibrated
+  tier probabilities, top-1/top-2 `margin`, an `uncertain` flag, ranked
+  models (expected utility), and ranked tools/MCP servers. See
+  [Scoring & ranking](#scoring--ranking-shim-decision-surface).
+- **Jeff-1 second decision head** — the open-weight GestaltLabs/Jeff-1 model
+  runs as a sidecar process; it blends into `rank-plans` and advises on
+  uncertain routes. On by default, fail-open, never changes the routed tier.
+  See [Jeff-1 second decision head](#jeff-1-second-decision-head).
+- **Shipped integrations** — grok-local and ZCode Local consume the shim as
+  their decision engine, built in — no adapter to install, no config to
+  chase down, no extra process to launch. See
+  [Shipped product integrations](#shipped-product-integrations).
+- **Fail-open everywhere** — SystemOne is advisory: it never loads, unloads,
+  switches, or evicts your LM Studio model, and every failure path degrades
+  to the session proceeding as if routing did not exist.
+
 ## Map to Jev's primitives
 
 | Jev primitive | systemone | Returns |
@@ -260,17 +282,21 @@ working unchanged:
   file the shim serves raw scores and marks `"calibrated": false`.
 - **Model ranking**: each registry tier carries a `models[]` list
   (`quality` per tier mix, `cost`, `latency_ms_p50`, `vram_gb`,
-  `available`). `ranked_models` is the top-3 available models by expected
+  `available`). `ranked_models` is the top-N available models by expected
   utility `U(m) = Σ_t P(t)·quality(m,t) − λ·cost(m)` with
-  `SYSTEMONE_COST_LAMBDA` (default 0.15). Advisory only — SystemOne never
+  `SYSTEMONE_COST_LAMBDA` (default 0.15); N is `SYSTEMONE_MODEL_TOPN`
+  (default 3). Advisory only — SystemOne never
   loads or switches models; a pinned model always wins. `available` is
   refreshed from the LM Studio inventory (`GET /v1/models`, 1.5s timeout,
   background refresh every `SYSTEMONE_INVENTORY_TTL` seconds, default 300);
   when LM Studio is unreachable the registry values stand.
-- **Tool/MCP ranking** (`systemone/tool_registry.json`): GLiClass zero-shot
-  relevance per tool/MCP server, one batched engine call, filtered to
-  `relevance >= SYSTEMONE_TOOL_FLOOR` (default 0.30), top
-  `SYSTEMONE_TOOL_TOPK` (default 8). Cheap path: when `uncertain` is true or
+- **Tool/MCP ranking** (`systemone/tool_registry.json`): hybrid relevance per
+  tool/MCP server — a GLiClass zero-shot model score blended with keyword
+  overlap (`relevance = SYSTEMONE_TOOL_KW_WEIGHT × keyword +
+  SYSTEMONE_TOOL_MODEL_WEIGHT × model`, defaults 0.6/0.4; a raw model score
+  below `SYSTEMONE_TOOL_VETO` (default 0.25) vetoes keyword matches) —
+  filtered to `relevance >= SYSTEMONE_TOOL_FLOOR` (default 0.30), top
+  `SYSTEMONE_TOOL_TOPK` (default 8), one batched engine call. Cheap path: when `uncertain` is true or
   effort is `low`, tool scoring is skipped — `ranked_tools: []` with
   `"tool_scoring": "skipped"`. Consumer rule: `uncertain == true` → no
   tool/MCP pruning, effort bumps one level (low→medium→high).
@@ -291,6 +317,24 @@ python3 systemone/battery/run.py --base-url http://127.0.0.1:8765  # full assert
 python3 systemone/battery/run.py --mode live --base-url http://127.0.0.1:8765
 python3 systemone/battery/fit.py --base-url http://127.0.0.1:18765  # -> calibration.json
 ```
+
+### Latest full run (2026-09-24)
+
+All 250 tasks against a local dev shim (`127.0.0.1:18765`):
+
+| Check | Result | Bar |
+|---|---|---|
+| Tier accuracy | 0.888 (222/250) | ≥ 0.80 (warn < 0.85) |
+| Effort accuracy | 0.888 (222/250) | — |
+| Brier, calibrated top-1 | 0.096 | — |
+| Latency p50 / p95 | 85.2 ms / 89.7 ms | ≤ 500 ms / ≤ 2000 ms |
+| Margin, mean / median | 0.76 / 0.73 | — |
+| Uncertain routes | 0 / 250 | — |
+| Failures / warnings | 0 / 0 | — |
+
+Mean calibrated confidence: 0.86 on correct routes vs 0.84 on wrong ones —
+the calibration is honest. (The battery is the repo's own hand-labeled set,
+so treat these as regression numbers, not generalization claims.)
 
 Asserts: tier accuracy ≥ 0.80 (warn < 0.85), ECE (10-bin, calibrated top-1)
 ≤ 0.10, p50 ≤ 500ms / p95 ≤ 2000ms, schema regression on all response keys,
@@ -409,6 +453,34 @@ Ctrl-C stops both. The default `SYSTEMONE_JEFF1_URL` (localhost) just works.
 | `SYSTEMONE_JEFF1_BLEND` | `0.5` | Jeff-1 weight in the plan blend: `p = (1−w)·gliclass + w·jeff1` |
 | `JEFF1_ADAPTER_ID` / `JEFF1_BASE_ID` | `GestaltLabs/Jeff-1` / `Qwen/Qwen3-4B-Instruct-2507` | sidecar model ids (env-overridable, never hard-coded) |
 | `JEFF1_DEVICE` | auto (cuda → mps → cpu) | sidecar device override |
+
+## Shipped product integrations
+
+SystemOne is baked into two shipping tools — no adapter to install, no
+config to chase down, no extra process to launch. Both treat it as advisory
+and fail-open: if the shim is unreachable, the session proceeds exactly as
+if routing did not exist.
+
+- **grok-local ≥ 0.5.2** — the Rust crate `xai-grok-systemone` bakes the
+  dispatcher directly into the binary: it probes `127.0.0.1:8765/healthz`
+  and starts the shim itself (detached, lock-guarded) if the router is down.
+  Per task it maps the routed tier to a reasoning effort and loop caps,
+  drives MCP-server suggestions from `ranked_tools`, and scores candidate
+  plans via `rank-plans`. `uncertain` routes disable pruning unconditionally.
+  Pruning is conservative and opt-in (`GROK_LOCAL_SYSTEMONE_PRUNE=1`; off by
+  default). Model switching is deliberately **not** implemented —
+  `ranked_models` is advisory only, logged, never acted on. Kill switches:
+  `GROK_LOCAL_SYSTEMONE=0` (disable all routing),
+  `GROK_LOCAL_SYSTEMONE_NO_AUTOSTART=1` (probe only, never start the shim).
+- **ZCode Local ≥ 3.25.0** — the agent flow (`speedstack` package) consumes
+  the route per task: tier → reasoning depth, turn budget, suggested MCP
+  servers, task labels; `rank-plans` ranks candidate plans before execution;
+  the Phase-3 uncertain rule fires when `uncertain == true` — no tool/MCP
+  pruning, effort bumped one tier. Kill switches: `ZCODE_SYSTEMONE`,
+  `ZCODE_SPEEDSTACK_PRUNE`.
+
+Neither product loads, unloads, switches, or evicts your active LM Studio
+model — routing only ever *recommends*.
 
 ## Fail-open & trust boundaries
 
