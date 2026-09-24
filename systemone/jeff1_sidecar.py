@@ -27,6 +27,8 @@ Environment (no hard-coded model ids or knobs):
     JEFF1_BASE_ID      default "Qwen/Qwen3-4B-Instruct-2507"
     JEFF1_DEVICE       default auto: cuda -> mps -> cpu
     JEFF1_MAX_LENGTH   default "2048"
+    JEFF1_HOST         bind address, default "127.0.0.1" (also: --host;
+                       use "0.0.0.0" or the tailnet IP to serve other machines)
     JEFF1_PORT         default "8079" (also: --port)
 
 Memory: the 4B bf16 base + LoRA adapter needs ~8-9 GB of device memory. On
@@ -429,8 +431,8 @@ class Jeff1Handler(BaseHTTPRequestHandler):
         pass  # quiet; load prints its own line
 
 
-def serve(port: int = 8079) -> ThreadingHTTPServer:
-    server = ThreadingHTTPServer(("127.0.0.1", port), Jeff1Handler)
+def serve(port: int = 8079, host: str = "127.0.0.1") -> ThreadingHTTPServer:
+    server = ThreadingHTTPServer((host, port), Jeff1Handler)
     server.engine = get_engine()  # type: ignore[attr-defined]
     return server
 
@@ -438,15 +440,18 @@ def serve(port: int = 8079) -> ThreadingHTTPServer:
 def main(argv: Optional[List[str]] = None) -> None:
     parser = argparse.ArgumentParser(
         description="Jeff-1 second decision head (sidecar for SystemOne)")
+    parser.add_argument("--host", type=str,
+                        default=_env("JEFF1_HOST", "127.0.0.1"),
+                        help="bind address (0.0.0.0 to serve the tailnet)")
     parser.add_argument("--port", type=int,
                         default=int(_env("JEFF1_PORT", "8079")))
     args = parser.parse_args(argv)
     engine = get_engine()
-    print(f"jeff-1 sidecar on http://127.0.0.1:{args.port}/ "
+    print(f"jeff-1 sidecar on http://{args.host}:{args.port}/ "
           f"(adapter {adapter_id()}, base {base_id()}, device {engine.device}; "
           "model loads lazily on first request, ~8-9 GB)",
           flush=True)
-    serve(args.port).serve_forever()
+    serve(args.port, args.host).serve_forever()
 
 
 if __name__ == "__main__":

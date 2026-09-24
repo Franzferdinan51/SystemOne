@@ -343,7 +343,7 @@ One sidecar on the Mac mini; every shim points at it.
 Mac mini (sidecar + shim), as `duckets`:
 
 ```bash
-nohup python3.11 -m systemone.jeff1_sidecar --port 8079 >/tmp/jeff1.log 2>&1 &
+nohup python3.11 -m systemone.jeff1_sidecar --host 0.0.0.0 --port 8079 >/tmp/jeff1.log 2>&1 &
 nohup python3.11 -m systemone.shim --port 8765 >/tmp/sysone-shim.log 2>&1 &
 ```
 
@@ -357,8 +357,8 @@ Windows PC (shim only), user-level env:
 ```
 
 then start/restart the shim as usual. `100.68.208.113` is the Mac mini's
-Tailscale IP; the sidecar binds loopback on the Mac, so Windows reaches it
-over the tailnet.
+Tailscale IP; the sidecar binds 0.0.0.0 on the Mac so the Windows shim
+reaches it over the tailnet.
 
 ### (b) Single-device (one box does everything)
 
@@ -376,6 +376,7 @@ Ctrl-C stops both. The default `SYSTEMONE_JEFF1_URL` (localhost) just works.
 | `SYSTEMONE_JEFF1` | `1` (on) | `0` disables the head everywhere; the shim never dials the sidecar |
 | `SYSTEMONE_JEFF1_URL` | `http://127.0.0.1:8079` | sidecar base URL (set to the Mac's tailnet IP on other machines) |
 | `SYSTEMONE_JEFF1_TIMEOUT` | `2.5` | per-request seconds; a slow sidecar degrades to GLiClass-only |
+| `JEFF1_HOST` | `127.0.0.1` | sidecar bind address (`--host`); use `0.0.0.0` to serve the tailnet |
 | `SYSTEMONE_JEFF1_BLEND` | `0.5` | Jeff-1 weight in the plan blend: `p = (1−w)·gliclass + w·jeff1` |
 | `JEFF1_ADAPTER_ID` / `JEFF1_BASE_ID` | `GestaltLabs/Jeff-1` / `Qwen/Qwen3-4B-Instruct-2507` | sidecar model ids (env-overridable, never hard-coded) |
 | `JEFF1_DEVICE` | auto (cuda → mps → cpu) | sidecar device override |
