@@ -28,8 +28,8 @@ Endpoints:
                               the GLiClass scores (fail-open)
     POST /v1/systemone/decide
                               typed decision: {"state", "instructions",
-                              "criteria", "type"} — proxy to the Jeff-1
-                              sidecar when reachable (backend "jeff1"),
+                              "criteria", "type"} — proxy to the decision
+                              sidecar when reachable (backend "decider"),
                               else answer locally with the GLiClass engine
                               (backend "fallback", fail-open)
     GET  /healthz, /           liveness
@@ -1314,9 +1314,8 @@ class ShimHandler(BaseHTTPRequestHandler):
 
         Body: {"state", "instructions", "criteria", "type"} — the decision
         sidecar's decide schema. The primary path proxies the request to
-        the sidecar, whose engine is selected by SYSTEMONE_DECISION_BACKEND
-        on the sidecar (backend "jeff1"|"decider"; jeff1 is the default and
-        the rollback target). When the sidecar is unreachable, 404s
+        the sidecar (backend "decider", the sole backend). When the sidecar
+        is unreachable, 404s
         (endpoint not deployed yet), or returns a malformed reply, the
         request fails open to the local GLiClass engine
         (backend "fallback") via the same machinery as /v1/systemone.

@@ -18,7 +18,7 @@ Configuration — no hard-coded knobs:
 - ``SYSTEMONE_JEFF1_URL``      sidecar base URL
                               (default "http://127.0.0.1:8079")
 - ``SYSTEMONE_JEFF1_TIMEOUT``  per-request seconds (default "2.5")
-- ``SYSTEMONE_JEFF1_BLEND``    Jeff-1 weight in the plan blend (default "0.5")
+- ``SYSTEMONE_JEFF1_BLEND``    sidecar weight in the plan blend (default "0.5")
 
 Fail-open everywhere: connection refused, timeout, malformed replies —
 every public helper returns None / degrades instead of raising.

@@ -16,10 +16,10 @@ into shipping products:
   tier probabilities, top-1/top-2 `margin`, an `uncertain` flag, ranked
   models (expected utility), and ranked tools/MCP servers. See
   [Scoring & ranking](#scoring--ranking-shim-decision-surface).
-- **Decision sidecar with a selectable backend** — the sidecar serves typed
+- **Decision sidecar with a single backend** — the sidecar serves typed
   decisions and blends into `rank-plans`, advising on uncertain routes. On
   by default, fail-open, never changes the routed tier. The backend is
-  **Mapika/decider-4b v2.1** (Apache 2.0) — the only backend; the
+  **Mapika/decider-4b v2.1** (Apache 2.0) — the only backend; the old
   `SYSTEMONE_DECISION_BACKEND` switch is gone. See [Decision
   sidecar](#decision-sidecar).
 - **Shipped integrations** — grok-local and ZCode Local consume the shim as
@@ -143,7 +143,7 @@ rationale  : Task 'Write a SQL query to find duplicate customer emails in the us
 
 $ systemone decide --type noul --state "The deploy pipeline is green and all checks passed" \
     --instructions "Is it safe to deploy to production right now?"
-backend    : jeff1
+backend    : decider
 answer     : yes  (P(yes)=0.9510, confidence 0.9510)
 latency    : 231.6 ms
 
@@ -151,7 +151,7 @@ $ systemone decide --type choice --state "CI is green, canary at 5% error budget
     --instructions "Which deploy action should we take?" \
     --criteria ship="deploy to production now" --criteria hold="wait for the next window" \
     --criteria rollback="roll back the canary"
-backend    : jeff1
+backend    : decider
 choice     : ship  (confidence 0.7987)
 probabilities:
     ship                     0.8658 #################
@@ -162,10 +162,10 @@ latency    : 262.7 ms
 $ systemone status
 shim       : http://127.0.0.1:8765
   ok       : yes  (engine model: knowledgator/gliclass-edge-v3.0)
-  decide   : backend=jeff1  latency=84.7 ms  confidence=0.8149
+  decide   : backend=decider  latency=84.7 ms  confidence=0.8149
 ```
 
-Every command also takes `--json` for machine-readable output, plus global
+`route`, `decide`, and `status` also take `--json` for machine-readable output, plus global
 `--shim-url` and `--timeout`. `systemone battery` forwards its arguments
 verbatim to the calibration battery (`systemone/battery/run.py`), and
 `systemone local` / `ask` / `serve` keep the legacy in-process engine.
@@ -197,7 +197,7 @@ Add to a client's MCP config, e.g.:
 `systemone-acp` is a minimal ACP v1 agent (newline JSON-RPC on stdio, no extra
 dependencies) exposing exactly two commands to the user:
 
-- `/route [--cost-bias economy|balanced|quality] [--tiers a,b] <task>`
+- `/route [--cost-bias economy|balanced|quality] <task>`
 - `/decide` + a fenced JSON block (`type`/`state`/`instructions`/`criteria`)
 
 It routes/decides through the live shim and reports each step as ACP
@@ -667,10 +667,10 @@ consult it. The second opinion is advisory — it never changes the routed
 tier.
 
 The sidecar runs **once**, on the Windows PC (moved off the Mac mini
-2026-09-25) — Jeff-1 needs ~8–9 GB of device memory (4B bf16 base + LoRA),
-decider-4b ~10 GB (merged bf16). It never evicts the loaded LM Studio
-worker model; if the box cannot hold both, stay on the lighter backend
-(or stop the sidecar) rather than unloading anything.
+2026-09-25) — decider-4b v2.1 needs ~10 GB of device memory (merged bf16)
+on the PC's GPU. It never evicts the loaded LM Studio worker model; if
+the box cannot hold both, stop the sidecar rather than unloading
+anything.
 
 ### (a) Decentralized (production)
 
@@ -714,7 +714,8 @@ python -m systemone.cli serve --port 8765 --with-jeff1 --jeff1-port 8079
 ```
 
 Starts the sidecar as a subprocess, then the shim in the foreground;
-Ctrl-C stops both. The default `SYSTEMONE_JEFF1_URL` (localhost) just works.
+Ctrl-C stops both. (Flag names are historical — the backend is
+decider-4b.) The default `SYSTEMONE_JEFF1_URL` (localhost) just works.
 
 ### Sidecar knobs
 
@@ -734,7 +735,7 @@ config to chase down, no extra process to launch. Both treat it as advisory
 and fail-open: if the shim is unreachable, the session proceeds exactly as
 if routing did not exist.
 
-- **grok-local ≥ 0.5.2** — the Rust crate `xai-grok-systemone` bakes the
+- **grok-local ≥ 0.5.4** — the Rust crate `xai-grok-systemone` bakes the
   dispatcher directly into the binary: it probes `127.0.0.1:8765/healthz`
   and starts the shim itself (detached, lock-guarded) if the router is down.
   Per task it maps the routed tier to a reasoning effort and loop caps,
@@ -745,7 +746,7 @@ if routing did not exist.
   `ranked_models` is advisory only, logged, never acted on. Kill switches:
   `GROK_LOCAL_SYSTEMONE=0` (disable all routing),
   `GROK_LOCAL_SYSTEMONE_NO_AUTOSTART=1` (probe only, never start the shim).
-- **ZCode Local ≥ 3.25.0** — the agent flow (`speedstack` package) consumes
+- **ZCode Local ≥ 3.27.0** — the agent flow (`speedstack` package) consumes
   the route per task: tier → reasoning depth, turn budget, suggested MCP
   servers, task labels; `rank-plans` ranks candidate plans before execution;
   the Phase-3 uncertain rule fires when `uncertain == true` — no tool/MCP
@@ -796,7 +797,7 @@ Set `PYTHONIOENCODING=utf-8` on Windows consoles.
 
 - **[GestaltLabs](https://huggingface.co/GestaltLabs)** — Jeff-1
   ([GestaltLabs/Jeff-1](https://huggingface.co/GestaltLabs/Jeff-1), Apache 2.0),
-  the open-weight second decision head.
+  the open-weight decision head (former sidecar backend; weights retained).
 - **Alibaba Qwen team** — [Qwen3-4B-Instruct-2507](https://huggingface.co/Qwen/Qwen3-4B-Instruct-2507),
   the base model Jeff-1 adapts.
 - **[Knowledgator](https://huggingface.co/knowledgator)** — GLiClass checkpoints
