@@ -40,7 +40,7 @@ from systemone.jeff1_sidecar import Jeff1Handler  # noqa: E402
 
 
 class _StubEngine:
-    """Jeff1Engine-shaped stub: canned choice/noul replies, no weights."""
+    """Engine-shaped stub: canned choice/noul replies, no weights."""
 
     loaded = True
     load_error = None
@@ -307,18 +307,13 @@ def test_decide_503_when_weights_fail():
 # -- backend reporting --------------------------------------------------------
 
 
-def test_decide_reports_active_backend(sidecar, monkeypatch):
-    """The sidecar stamps decide replies with the active engine backend
-    (SYSTEMONE_DECISION_BACKEND): jeff1 by default, decider when selected."""
+def test_decide_reports_decider_backend(sidecar, monkeypatch):
+    """The sidecar stamps decide replies with "decider" — the sole
+    backend. The legacy SYSTEMONE_DECISION_BACKEND switch is gone."""
     sidecar.engine = _StubEngine(noul_p=0.8)
     payload = {"state": "x", "instructions": "Is it true?", "type": "noul"}
-
-    monkeypatch.setenv("SYSTEMONE_DECISION_BACKEND", "decider")
-    code, body = _post(sidecar, payload)
-    assert code == 200
-    assert body["backend"] == "decider"
 
     monkeypatch.delenv("SYSTEMONE_DECISION_BACKEND", raising=False)
     code, body = _post(sidecar, payload)
     assert code == 200
-    assert body["backend"] == "jeff1"
+    assert body["backend"] == "decider"

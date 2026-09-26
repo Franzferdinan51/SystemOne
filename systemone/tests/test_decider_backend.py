@@ -1,15 +1,14 @@
-"""Tests for the SYSTEMONE_DECISION_BACKEND switch (jeff1 | decider).
+"""Tests for the decider-only decision sidecar (systemone/jeff1_sidecar.py).
 
 Covers (no model weights needed — Decider is mocked throughout):
 
-- backend selection via env: decider -> DeciderEngine, jeff1/unset ->
-  Jeff1Engine (the rollback default), unknown value -> ValueError
+- the sidecar is decider-only: get_engine() always builds DeciderEngine,
+  and a leftover SYSTEMONE_DECISION_BACKEND env var fails loudly
 - DeciderEngine adapter mapping for choice / noul / score against the
   decider-ai answer shapes (answer["choice"] + answer["probabilities"],
   answer["noul"], score argmax over answer["probabilities"])
 - score prediction is argmax over the level probabilities, never the
   rounded "score" expectation field
-- Jeff1Engine.score delegates to its choice readout (behavior unchanged)
 - end-to-end: POST /v1/jeff1/decide through the real handler with a
   mocked Decider
 """
@@ -29,7 +28,6 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
 import systemone.jeff1_sidecar as mod  # noqa: E402
 from systemone.jeff1_sidecar import (  # noqa: E402
     DeciderEngine,
-    Jeff1Engine,
     Jeff1Handler,
 )
 
@@ -64,7 +62,7 @@ def _engine_with_fake(answers):
 
 @pytest.fixture()
 def clean_engine():
-    """Isolate get_engine()'s module-global cache + the env switch."""
+    """Isolate get_engine()'s module-global cache + the legacy env var."""
     saved_engine, saved_env = mod._ENGINE, os.environ.get(
         "SYSTEMONE_DECISION_BACKEND")
     mod._ENGINE = None
@@ -78,34 +76,28 @@ def clean_engine():
             os.environ["SYSTEMONE_DECISION_BACKEND"] = saved_env
 
 
-# -- backend selection ----------------------------------------------------------
+# -- decider-only backend -------------------------------------------------------
 
 
-def test_backend_defaults_to_jeff1(clean_engine, monkeypatch):
+def test_backend_is_always_decider(clean_engine, monkeypatch):
     monkeypatch.delenv("SYSTEMONE_DECISION_BACKEND", raising=False)
-    assert isinstance(mod.get_engine(), Jeff1Engine)
-
-
-def test_backend_jeff1_explicit(clean_engine, monkeypatch):
-    monkeypatch.setenv("SYSTEMONE_DECISION_BACKEND", "jeff1")
-    assert isinstance(mod.get_engine(), Jeff1Engine)
-
-
-def test_backend_decider(clean_engine, monkeypatch):
-    monkeypatch.setenv("SYSTEMONE_DECISION_BACKEND", "decider")
     eng = mod.get_engine()
     assert isinstance(eng, DeciderEngine)
     assert "decider-4b" in eng.model_id
 
 
-def test_backend_value_is_case_insensitive(clean_engine, monkeypatch):
-    monkeypatch.setenv("SYSTEMONE_DECISION_BACKEND", "Decider")
-    assert isinstance(mod.get_engine(), DeciderEngine)
+def test_legacy_backend_env_var_fails_loudly(clean_engine, monkeypatch):
+    # SYSTEMONE_DECISION_BACKEND no longer exists: setting it must fail
+    # fast with a clear message, never silently serve something else.
+    monkeypatch.setenv("SYSTEMONE_DECISION_BACKEND", "jeff1")
+    with pytest.raises(RuntimeError, match="no longer supported"):
+        mod.get_engine()
 
 
-def test_backend_unknown_raises(clean_engine, monkeypatch):
-    monkeypatch.setenv("SYSTEMONE_DECISION_BACKEND", "bogus")
-    with pytest.raises(ValueError, match="unknown SYSTEMONE_DECISION_BACKEND"):
+def test_legacy_backend_env_var_fails_loudly_any_value(
+        clean_engine, monkeypatch):
+    monkeypatch.setenv("SYSTEMONE_DECISION_BACKEND", "decider")
+    with pytest.raises(RuntimeError, match="no longer supported"):
         mod.get_engine()
 
 
@@ -194,20 +186,6 @@ def test_ask_without_load_raises():
     eng = DeciderEngine()
     with pytest.raises(RuntimeError, match="not loaded"):
         eng.choice("s", "i", {"a": None, "b": None})
-
-
-def test_jeff1_engine_score_delegates_to_choice():
-    eng = Jeff1Engine()
-    seen = {}
-
-    def fake_choice(state, instructions, criteria):
-        seen["criteria"] = dict(criteria)
-        return "1", {"0": 0.2, "1": 0.8}, 0.8
-
-    eng.choice = fake_choice
-    assert eng.score("s", "i", {"0": None, "1": None}) == \
-        ("1", {"0": 0.2, "1": 0.8}, 0.8)
-    assert seen["criteria"] == {"0": None, "1": None}
 
 
 # -- end-to-end through the real handler -------------------------------------------

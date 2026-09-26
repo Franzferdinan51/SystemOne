@@ -11,11 +11,10 @@ Stdlib only (urllib) — no extra dependencies for the agent layer.
 
 No model IDs are hard-coded here: routing and decisions are delegated to
 the shim, which owns its model registry. The decide endpoint is served by
-the decision sidecar — engine selected by SYSTEMONE_DECISION_BACKEND on
-the sidecar: "jeff1" (GestaltLabs/Jeff-1, Apache-2.0; the default and the
-rollback target) or "decider" (Mapika/decider-4b, Apache-2.0) — with a
-fail-open local GLiClass fallback (backend "fallback") when the sidecar
-is unreachable. See the shim's decide contract.
+the decision sidecar — the sole backend is Mapika/decider-4b v2.1
+(Apache-2.0) — with a fail-open local GLiClass fallback (backend
+"fallback") when the sidecar is unreachable. See the shim's decide
+contract.
 """
 
 from __future__ import annotations

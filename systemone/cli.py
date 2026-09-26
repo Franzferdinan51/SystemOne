@@ -285,12 +285,12 @@ def cmd_ask(args: argparse.Namespace) -> int:
 
 
 def cmd_serve(args: argparse.Namespace) -> int:
-    """Run the shim; --with-jeff1 also starts the Jeff-1 sidecar.
+    """Run the shim; --with-jeff1 also starts the decision sidecar.
 
     Single-device story: one command brings up the GLiClass router shim on
-    --port and the Jeff-1 sidecar on --jeff1-port, both in the foreground.
+    --port and the decision sidecar on --jeff1-port, both in the foreground.
     Ctrl-C stops the shim and terminates the sidecar subprocess.
-    """
+    (Flag names are historical — the sidecar backend is decider-4b.)"""
     import subprocess
 
     procs = []
@@ -304,7 +304,7 @@ def cmd_serve(args: argparse.Namespace) -> int:
                 env=env,
             )
             procs.append(proc)
-            print(f"jeff-1 sidecar starting on http://127.0.0.1:{args.jeff1_port} "
+            print(f"decision sidecar starting on http://127.0.0.1:{args.jeff1_port} "
                   f"(pid {proc.pid}; model loads lazily on first request)")
         from .shim import serve as shim_serve
 
@@ -410,9 +410,9 @@ def build_parser() -> argparse.ArgumentParser:
     p_serve.add_argument("--port", type=int, default=8765,
                          help="shim port (default 8765)")
     p_serve.add_argument("--with-jeff1", action="store_true",
-                         help="also start the Jeff-1 sidecar as a subprocess")
+                         help="also start the decision sidecar as a subprocess")
     p_serve.add_argument("--jeff1-port", type=int, default=8079,
-                         help="Jeff-1 sidecar port (default 8079)")
+                         help="decision sidecar port (default 8079)")
     p_serve.set_defaults(func=cmd_serve)
 
     return parser

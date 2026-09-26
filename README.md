@@ -18,10 +18,10 @@ into shipping products:
   [Scoring & ranking](#scoring--ranking-shim-decision-surface).
 - **Decision sidecar with a selectable backend** — the sidecar serves typed
   decisions and blends into `rank-plans`, advising on uncertain routes. On
-  by default, fail-open, never changes the routed tier. The live backend is
-  **Mapika/decider-4b v2.1** (Apache 2.0); the open-weight
-  GestaltLabs/Jeff-1 model stays installed as the rollback. See [Jeff-1
-  second decision head](#jeff-1-second-decision-head).
+  by default, fail-open, never changes the routed tier. The backend is
+  **Mapika/decider-4b v2.1** (Apache 2.0) — the only backend; the
+  `SYSTEMONE_DECISION_BACKEND` switch is gone. See [Decision
+  sidecar](#decision-sidecar).
 - **Shipped integrations** — grok-local and ZCode Local consume the shim as
   their decision engine, built in — no adapter to install, no config to
   chase down, no extra process to launch. See
@@ -205,11 +205,9 @@ It routes/decides through the live shim and reports each step as ACP
 
 ### Decide backends
 
-`decide` is answered by the decision sidecar, whose engine is selected by
-`SYSTEMONE_DECISION_BACKEND` — `decider` (the live default,
-[Mapika/decider-4b](https://huggingface.co/Mapika/decider-4b) v2.1,
-Apache 2.0) or `jeff1` (the rollback target — see [Decision backend:
-Jeff-1 or decider-4b](#decision-backend-jeff-1-or-decider-4b)). The model
+`decide` is answered by the decision sidecar, whose sole backend is
+[Mapika/decider-4b](https://huggingface.co/Mapika/decider-4b) v2.1
+(Apache 2.0) — see [Decision backend](#decision-backend). The model
 loads lazily on the sidecar's first request. When the sidecar is
 unreachable the shim fails open to the local GLiClass path (backend
 `"fallback"`). `systemone status` shows which backend actually answered
@@ -246,21 +244,20 @@ the probe.
   `python -m systemone.shim [--port 8765]`, then point the agent's
   `post_json` URL at `http://127.0.0.1:8765/v1/systemone`. The only change
   on their side is the endpoint string.
-- **`jeff1.py`** — shim-side client for the Jeff-1 second decision head
-  (stdlib-only HTTP): `jeff1_enabled()`, `rank_plans_via_jeff1()`,
-  `second_opinion()`, `blend_rankings()`. On by default
-  (`SYSTEMONE_JEFF1=1`), fail-open on every error path. `/route` consults
-  it only on uncertain routes (advisory; never changes the tier);
-  `/rank-plans` blends its `P(plan succeeds | task)` 50/50 with the
-  GLiClass scores.
+- **`jeff1.py`** — shim-side client for the decision sidecar
+  (stdlib-only HTTP; the module name is historical): `jeff1_enabled()`,
+  `rank_plans_via_jeff1()`, `second_opinion()`, `blend_rankings()`. On by
+  default (`SYSTEMONE_JEFF1=1`), fail-open on every error path. `/route`
+  consults it only on uncertain routes (advisory; never changes the
+  tier); `/rank-plans` blends its `P(plan succeeds | task)` 50/50 with
+  the GLiClass scores.
 - **`jeff1_sidecar.py`** — standalone stdlib HTTP server hosting the
-  second decision head: `POST /v1/jeff1/rank-plans`,
+  decision sidecar: `POST /v1/jeff1/rank-plans`,
   `POST /v1/jeff1/second-opinion`, `POST /v1/jeff1/decide`,
-  `GET /healthz`. Backend selectable via `SYSTEMONE_DECISION_BACKEND`:
-  GestaltLabs/Jeff-1 (LoRA on Qwen3-4B-Instruct-2507, the default) or
-  Mapika/decider-4b v2.1 (Apache-2.0, merged bf16). Lazy model load,
-  CUDA → MPS → CPU for Jeff-1, CUDA for decider. See
-  "Deployment topologies" below.
+  `GET /healthz` (the `/v1/jeff1/*` path prefix is historical — the
+  backend is decider-4b). The sole backend is Mapika/decider-4b v2.1
+  (Apache-2.0, merged bf16), pinned to the benchmarked revision. Lazy
+  model load on CUDA. See "Deployment topologies" below.
 - **`distill.py`** — label with a teacher (`SyntheticTeacher`, `HFTeacher`,
   `LMStudioTeacher` — one local model at a time), write training JSON,
   fine-tune the edge student via the repo's `train.py`.
@@ -516,52 +513,53 @@ instead of inventing numbers.
 | `SYSTEMONE_INVENTORY_TTL` | LM Studio availability refresh seconds (tuning.json default 300) |
 | `GROK_LOCAL_SYSTEMONE*`, `ZCODE_SYSTEMONE`, `ZCODE_SPEEDSTACK_PRUNE` | product-side switches, unchanged |
 
-## Jeff-1 second decision head
+## Decision sidecar
 
-SystemOne's second decision head is **[Jeff-1](https://huggingface.co/GestaltLabs/Jeff-1)**,
-a [GestaltLabs](https://huggingface.co/GestaltLabs) open-weight model (Apache
-2.0): a LoRA adapter on **[Qwen/Qwen3-4B-Instruct-2507](https://huggingface.co/Qwen/Qwen3-4B-Instruct-2507)**
-(Alibaba Qwen team), trained for Jev-compatible typed decisions — `choice`,
-`score`, and `noul` outputs. Its published model-card metrics: accuracy 0.8183,
-macro-F1 0.7789, Brier 0.2839, ECE 0.0807.
+SystemOne's decision sidecar serves typed `choice` / `noul` / `score`
+decisions from **[Mapika/decider-4b](https://huggingface.co/Mapika/decider-4b)
+v2.1** ([Mapika](https://huggingface.co/Mapika), Apache 2.0) — the sole
+backend, picked by benchmark (see [Decision backend](#decision-backend)
+below). The Jeff-1 weights stay on disk but no code path loads them.
 
 - **On by default.** Set `SYSTEMONE_JEFF1=0` to run GLiClass-only.
 - **Consulted for plan ranking and uncertain routes only.** `/route` with a
-  *certain* result never calls Jeff-1 (trivial tasks stay on the ~85 ms hot
-  path); `rank-plans` blends Jeff-1's P(plan succeeds | task) 50/50 with the
-  GLiClass score (`jeff1.blended` on the response), and *uncertain* routes
-  record an advisory `jeff1_second_opinion` — the routed tier is never
-  changed by it.
+  *certain* result never calls the sidecar (trivial tasks stay on the
+  ~85 ms hot path); `rank-plans` blends the sidecar's P(plan succeeds |
+  task) 50/50 with the GLiClass score (`jeff1.blended` on the response),
+  and *uncertain* routes record an advisory `jeff1_second_opinion` — the
+  routed tier is never changed by it.
 - **Fail-open.** If the sidecar is unreachable, slow (past
   `SYSTEMONE_JEFF1_TIMEOUT`), or disabled, the shim serves GLiClass-only
   answers with `jeff1.consulted: false`. Sidecar-down and timeout behavior are
   covered by unit tests.
-- **Deployment** comes in two flavors — decentralized (one sidecar on the Mac
-  mini serving the Mac and Windows shims over the tailnet) and single-device
-  (`systemone serve --with-jeff1`). See [Deployment topologies](#deployment-topologies)
-  for the setup, and [Jeff-1 knobs](#jeff-1-knobs) for every env variable.
-- **Your worker model is never touched.** Jeff-1 runs as its own sidecar
-  process on its own device budget (~8–9 GB headroom for the 4B bf16 base +
-  LoRA; on Apple Silicon this comes from unified memory). It never loads,
-  unloads, switches, or competes with your loaded LM Studio model.
+- **Deployment** comes in two flavors — decentralized (one sidecar on the
+  Windows PC serving the Mac and Windows shims over the tailnet) and
+  single-device (`systemone serve --with-jeff1`). See [Deployment
+  topologies](#deployment-topologies) for the setup, and [Sidecar
+  knobs](#sidecar-knobs) for every env variable.
+- **Your worker model is never touched.** The sidecar runs as its own
+  process on its own device budget (decider-4b v2.1 needs ~10 GB VRAM,
+  merged bf16, on the PC's GPU). It never loads, unloads, switches, or
+  competes with your loaded LM Studio model.
 
-### Decision backend: Jeff-1 or decider-4b
+### Decision backend
 
-The sidecar's decision model is selectable at runtime via
-`SYSTEMONE_DECISION_BACKEND` — `jeff1` (default, the rollback target) or
-`decider` ([Mapika/decider-4b](https://huggingface.co/Mapika/decider-4b)
-v2.1, Apache-2.0). The HTTP contracts (`/v1/jeff1/decide`,
-`/v1/systemone/decide`) are identical either way; `/healthz` on the
-sidecar reports which model actually loaded. Credit: decision models by
-[Mapika](https://huggingface.co/Mapika) (Apache 2.0).
+One backend: **Mapika/decider-4b v2.1** (Apache 2.0), pinned to the
+benchmarked HF revision `eb5fbdfc…`. The old
+`SYSTEMONE_DECISION_BACKEND` switch is gone — if it is set, the sidecar
+refuses to start with a clear error. The HTTP contracts
+(`/v1/jeff1/decide`, `/v1/systemone/decide`) are unchanged: the
+`/v1/jeff1/*` path prefix is historical (the first backend was
+GestaltLabs/Jeff-1) and stays stable because the Mac shim, ZCode, and
+grok-local call it. `/healthz` on the sidecar reports the loaded model.
+Credit: decision models by [Mapika](https://huggingface.co/Mapika)
+(Apache 2.0).
 
-- **decider-4b v2.1** beat Jeff-1 on the 111-item JevBench hard set (see the
-  benchmark table below). It serves merged bf16 weights with
-  `use_graphs=False` and its own per-answer-type temperatures; score
-  answers use its native isolated-levels readout — prediction is argmax
-  over the level probabilities, never the rounded score expectation.
-- **decider** is the live default (what `run-jeff1.bat` ships);
-  **jeff1** is the rollback target.
+decider-4b v2.1 beat Jeff-1 on the 111-item JevBench hard set (see the
+benchmark table below). It serves merged bf16 weights with
+`use_graphs=False` and its own per-answer-type temperatures; score
+answers use its native isolated-levels readout — prediction is argmax
+over the level probabilities, never the rounded score expectation.
 
 ### Decide benchmarks
 
@@ -583,20 +581,20 @@ benchmark figures (cited, not reproduced here); Jeff-1, the legacy
 GLiClass path, and the live-shim numbers were measured in this
 environment. Latencies include the HTTP hop.
 
-### Rollback to Jeff-1
+### Rollback
 
-Jeff-1 is the rollback target. One command on the Windows PC — it flips
-`SYSTEMONE_DECISION_BACKEND` back to `jeff1` in `run-jeff1.bat`, stops the
-:8079 listener, and re-runs the `\Jeff1Sidecar` scheduled task:
+There is no runtime backend switch anymore. To roll back: revert this
+commit (or restore the previous `systemone/jeff1_sidecar.py`) and restart
+the `\Jeff1Sidecar` scheduled task on the Windows PC:
 
 ```cmd
-ssh batman-win "C:\Users\Duckets\systemone-sidecar\rollback-to-jeff1.bat"
+schtasks /Run /TN "\Jeff1Sidecar"
 ```
 
-Script: `C:\Users\Duckets\systemone-sidecar\rollback-to-jeff1.bat` on the
-PC. Manual equivalent: set `SYSTEMONE_DECISION_BACKEND=jeff1` (or delete
-the line) in `C:\Users\Duckets\systemone-sidecar\run-jeff1.bat`, then
-`schtasks /Run /TN "\Jeff1Sidecar"` to restart the sidecar.
+The Jeff-1 weights remain on disk at
+`C:\Users\Duckets\.cache\huggingface`, but no code path loads them.
+The old `rollback-to-jeff1.bat` on the PC is obsolete and has been
+neutralised.
 
 ## Typed decision endpoint (`POST /v1/systemone/decide`)
 
@@ -624,14 +622,13 @@ Response:
 
 ```json
 {"type": "choice", "label": "...", "probabilities": {...},
- "confidence": 0.72, "latency_ms": 231.5, "backend": "jeff1"}
+"confidence": 0.72, "latency_ms": 231.5, "backend": "decider"}
 ```
 
-`"backend": "jeff1"` means the answer came from the :8079 sidecar. (The
-sidecar's own decision model — Jeff-1 or Mapika/decider-4b — is selected
-via `SYSTEMONE_DECISION_BACKEND`; the sidecar's `/healthz` reports which
-one loaded.) `"backend": "fallback"` means the shim answered locally —
-see below. `confidence` uses decider-style definitions adapted from
+`"backend": "decider"` means the answer came from the :8079 sidecar
+(Mapika/decider-4b v2.1; the `/v1/jeff1/*` path prefix is historical).
+`"backend": "fallback"` means the shim answered locally — see below.
+`confidence` uses decider-style definitions adapted from
 Mapika/decider (Apache 2.0).
 
 Example:
@@ -660,8 +657,8 @@ offline calibration and metrics.
 
 SystemOne has two processes: the **shim** (`python -m systemone.shim`,
 the GLiClass router on :8765) and the **decision sidecar**
-(`python -m systemone.jeff1_sidecar`, typed decisions on :8079 — currently
-Mapika/decider-4b v2.1, Jeff-1 as rollback). The sidecar is **on by
+(`python -m systemone.jeff1_sidecar`, typed decisions on :8079 —
+Mapika/decider-4b v2.1, the sole backend). The sidecar is **on by
 default** and fail-open: if the sidecar is unreachable, slow, or disabled, the shim
 serves GLiClass-only answers with `jeff1.consulted: false` and no added
 latency beyond the fast refusal. Hot-path rule: `/route` with a *certain*
@@ -719,7 +716,7 @@ python -m systemone.cli serve --port 8765 --with-jeff1 --jeff1-port 8079
 Starts the sidecar as a subprocess, then the shim in the foreground;
 Ctrl-C stops both. The default `SYSTEMONE_JEFF1_URL` (localhost) just works.
 
-### Jeff-1 knobs
+### Sidecar knobs
 
 | Variable | Default | Effect |
 |---|---|---|
@@ -727,10 +724,7 @@ Ctrl-C stops both. The default `SYSTEMONE_JEFF1_URL` (localhost) just works.
 | `SYSTEMONE_JEFF1_URL` | `http://127.0.0.1:8079` | sidecar base URL (point shims on other machines at the PC's tailnet IP) |
 | `SYSTEMONE_JEFF1_TIMEOUT` | `2.5` | per-request seconds; a slow sidecar degrades to GLiClass-only |
 | `JEFF1_HOST` | `127.0.0.1` | sidecar bind address (`--host`); use `0.0.0.0` to serve the tailnet |
-| `SYSTEMONE_JEFF1_BLEND` | `0.5` | Jeff-1 weight in the plan blend: `p = (1−w)·gliclass + w·jeff1` |
-| `JEFF1_ADAPTER_ID` / `JEFF1_BASE_ID` | `GestaltLabs/Jeff-1` / `Qwen/Qwen3-4B-Instruct-2507` | sidecar model ids (env-overridable, never hard-coded) |
-| `JEFF1_DEVICE` | auto (cuda → mps → cpu) | sidecar device override |
-| `SYSTEMONE_DECISION_BACKEND` | `decider` | `jeff1` rolls back to GestaltLabs/Jeff-1 instead of decider-4b v2.1 (restart the sidecar) |
+| `SYSTEMONE_JEFF1_BLEND` | `0.5` | sidecar weight in the plan blend: `p = (1−w)·gliclass + w·sidecar` |
 | `DECIDER_REPO_ID` / `DECIDER_REVISION` | `Mapika/decider-4b` / `eb5fbdfc…` | decider backend model pin (a version pin, env-overridable) |
 
 ## Shipped product integrations
