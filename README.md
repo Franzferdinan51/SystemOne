@@ -35,6 +35,11 @@ into shipping products:
   and state-first prompt rows with option shuffling for the decision
   endpoints. Adapted from Mapika/decider (Apache 2.0) — see
   [Credits](#credits).
+- **Typed decision endpoint is live** — `POST /v1/systemone/decide` on the
+  shim serves Jev-shaped `choice` / `noul` / `score` decisions, proxied
+  through the :8079 decision sidecar with a fail-open local GLiClass
+  fallback. See [Typed decision
+  endpoint](#typed-decision-endpoint-post-v1systemonedecide).
 
 ## Map to Jev's primitives
 
@@ -431,17 +436,109 @@ The sidecar's decision model is selectable at runtime via
 `SYSTEMONE_DECISION_BACKEND` — `jeff1` (default, the rollback target) or
 `decider` ([Mapika/decider-4b](https://huggingface.co/Mapika/decider-4b)
 v2.1, Apache-2.0). The HTTP contracts (`/v1/jeff1/decide`,
-`/v1/systemone/decide`) are identical either way; `/healthz` reports
-which model actually loaded.
+`/v1/systemone/decide`) are identical either way; `/healthz` on the
+sidecar reports which model actually loaded. Credit: decision models by
+[Mapika](https://huggingface.co/Mapika) (Apache 2.0).
 
-- **decider-4b v2.1** beat Jeff-1 on the 111-item JevBench hard set
-  (accuracy 0.64 vs 0.41, ECE 0.22 vs 0.47, median latency 232 ms vs
-  600 ms). It serves merged bf16 weights with `use_graphs=False` and its
-  own per-answer-type temperatures; score answers use its native
-  isolated-levels readout — prediction is argmax over the level
-  probabilities, never the rounded score expectation.
-- **jeff1** stays the default and the rollback: unset the variable (or
-  set it to `jeff1`) and restart the sidecar to roll back.
+- **decider-4b v2.1** beat Jeff-1 on the 111-item JevBench hard set (see the
+  benchmark table below). It serves merged bf16 weights with
+  `use_graphs=False` and its own per-answer-type temperatures; score
+  answers use its native isolated-levels readout — prediction is argmax
+  over the level probabilities, never the rounded score expectation.
+- **jeff1** stays the default and the rollback target.
+
+### Decide benchmarks
+
+Argmax accuracy on the 111-item JevBench public hard set:
+
+| Decision model | Accuracy | ECE | Median latency | Source |
+|---|---|---|---|---|
+| Mapika/decider-4b v2.1 | 0.640 | 0.22 | 232 ms | published decider numbers, cited |
+| Mapika/decider-2b v11 | 0.559 | — | — | published decider numbers, cited |
+| GestaltLabs/Jeff-1 | 0.405 | 0.47 | 600 ms | measured locally |
+| Legacy GLiClass path | 0.342 | — | — | measured locally |
+
+Live end-to-end through the shim's `POST /v1/systemone/decide`
+(decider-4b backend): **0.631 accuracy, 0.182 ECE** — measured locally.
+
+Methodology: the fixed 111-item JevBench public hard set, argmax
+prediction. The decider-4b/decider-2b numbers are Mapika's published
+benchmark figures (cited, not reproduced here); Jeff-1, the legacy
+GLiClass path, and the live-shim numbers were measured in this
+environment. Latencies include the HTTP hop.
+
+### Rollback to Jeff-1
+
+Jeff-1 is the rollback target. One command on the Windows PC — it flips
+`SYSTEMONE_DECISION_BACKEND` back to `jeff1` in `run-jeff1.bat`, stops the
+:8079 listener, and re-runs the `\Jeff1Sidecar` scheduled task:
+
+```cmd
+ssh batman-win "C:\Users\Duckets\systemone-sidecar\rollback-to-jeff1.bat"
+```
+
+Script: `C:\Users\Duckets\systemone-sidecar\rollback-to-jeff1.bat` on the
+PC. Manual equivalent: set `SYSTEMONE_DECISION_BACKEND=jeff1` (or delete
+the line) in `C:\Users\Duckets\systemone-sidecar\run-jeff1.bat`, then
+`schtasks /Run /TN "\Jeff1Sidecar"` to restart the sidecar.
+
+## Typed decision endpoint (`POST /v1/systemone/decide`)
+
+The shim exposes the decision backend as an HTTP API — Jev-shaped typed
+decisions over your own hardware, on the same schema the sidecar serves
+(`POST /v1/jeff1/decide`). States over 6000 chars are capped.
+
+Request:
+
+```json
+{"state": "<anything, converted to text>",
+ "instructions": "how to judge",
+ "criteria": {"label": "description", "...": "..."},
+ "type": "choice" | "noul" | "score"}
+```
+
+- **`choice`** — `criteria` is `{label: description}`. Returns the winning
+  `label` + per-label `probabilities`.
+- **`noul`** — no criteria needed (optional `{yes, no}` descriptions).
+  Returns a yes/no `label` + `probabilities`.
+- **`score`** — `criteria` is ordered level descriptions keyed `"0"`..`"n-1"`
+  (a list works too). Returns the winning `level` + `distribution`.
+
+Response:
+
+```json
+{"type": "choice", "label": "...", "probabilities": {...},
+ "confidence": 0.72, "latency_ms": 231.5, "backend": "jeff1"}
+```
+
+`"backend": "jeff1"` means the answer came from the :8079 sidecar. (The
+sidecar's own decision model — Jeff-1 or Mapika/decider-4b — is selected
+via `SYSTEMONE_DECISION_BACKEND`; the sidecar's `/healthz` reports which
+one loaded.) `"backend": "fallback"` means the shim answered locally —
+see below. `confidence` uses decider-style definitions adapted from
+Mapika/decider (Apache 2.0).
+
+Example:
+
+```bash
+curl -s http://localhost:8765/v1/systemone/decide \
+  -H 'Content-Type: application/json' -d '{
+    "state": "Payment service 500 errors for 12 minutes, no ack from on-call",
+    "instructions": "Which team owns this incident?",
+    "criteria": {"backend": "serves the API", "frontend": "serves the UI",
+                 "devops": "owns infra and deploys", "support": "talks to users"},
+    "type": "choice"
+  }' | python3 -m json.tool
+```
+
+**Fail-open fallback.** If the sidecar is unreachable, times out, 404s
+(older deploy), or returns a malformed reply, the shim answers locally
+with the GLiClass engine — same validators, same labels, same
+decider-style confidence — and marks the reply `"backend": "fallback"`.
+The decide path never 500s because the decision model is down; it
+degrades instead. Fallback answers are logged to
+`logs/decide-metrics.log` (`SYSTEMONE_DECIDE_LOG_FILE` relocates it) for
+offline calibration and metrics.
 
 ## Deployment topologies
 
@@ -464,27 +561,32 @@ worker model; if the box cannot hold both, stay on the lighter backend
 
 ### (a) Decentralized (production)
 
-One sidecar on the Mac mini; every shim points at it.
+One sidecar on the Windows PC; every shim points at it.
 
-Mac mini (sidecar + shim), as `duckets`:
+The sidecar runs as the scheduled task `\Jeff1Sidecar` (SYSTEM, on
+start) on the PC, binding `0.0.0.0:8079` so the tailnet can reach it.
+Launcher: `C:\Users\Duckets\systemone-sidecar\run-jeff1.bat`.
 
-```bash
-nohup python3.11 -m systemone.jeff1_sidecar --host 0.0.0.0 --port 8079 >/tmp/jeff1.log 2>&1 &
-nohup python3.11 -m systemone.shim --port 8765 >/tmp/sysone-shim.log 2>&1 &
-```
-
-(The shim defaults to `SYSTEMONE_JEFF1_URL=http://127.0.0.1:8079`, so the
-Mac needs no extra config.)
-
-Windows PC (shim only), user-level env:
+Windows PC (sidecar + shim), as `duckets`:
 
 ```powershell
-[Environment]::SetEnvironmentVariable("SYSTEMONE_JEFF1_URL", "http://100.68.208.113:8079", "User")
+schtasks /Run /TN "\Jeff1Sidecar"   # start/restart the sidecar on :8079
 ```
 
-then start/restart the shim as usual. `100.68.208.113` is the Mac mini's
-Tailscale IP; the sidecar binds 0.0.0.0 on the Mac so the Windows shim
-reaches it over the tailnet.
+(The shim defaults to `SYSTEMONE_JEFF1_URL=http://127.0.0.1:8079`, so a
+shim on the same box as the sidecar needs no extra config.)
+
+Mac mini (shim only), user-level env:
+
+```bash
+export SYSTEMONE_JEFF1_URL=http://100.115.6.113:8079   # the PC's Tailscale IP
+python3.11 -m systemone.shim --port 8765
+```
+
+`100.115.6.113` is the Windows PC's (Batman) Tailscale IP; the sidecar
+binds `0.0.0.0` on the PC so the Mac's shim reaches it over the tailnet.
+The old Mac-side sidecar launchd job (`com.askone.jeff1`) was removed
+when the sidecar moved to the PC — don't revive it.
 
 ### (b) Single-device (one box does everything)
 
@@ -500,7 +602,7 @@ Ctrl-C stops both. The default `SYSTEMONE_JEFF1_URL` (localhost) just works.
 | Variable | Default | Effect |
 |---|---|---|
 | `SYSTEMONE_JEFF1` | `1` (on) | `0` disables the head everywhere; the shim never dials the sidecar |
-| `SYSTEMONE_JEFF1_URL` | `http://127.0.0.1:8079` | sidecar base URL (set to the Mac's tailnet IP on other machines) |
+| `SYSTEMONE_JEFF1_URL` | `http://127.0.0.1:8079` | sidecar base URL (point shims on other machines at the PC's tailnet IP) |
 | `SYSTEMONE_JEFF1_TIMEOUT` | `2.5` | per-request seconds; a slow sidecar degrades to GLiClass-only |
 | `JEFF1_HOST` | `127.0.0.1` | sidecar bind address (`--host`); use `0.0.0.0` to serve the tailnet |
 | `SYSTEMONE_JEFF1_BLEND` | `0.5` | Jeff-1 weight in the plan blend: `p = (1−w)·gliclass + w·jeff1` |
