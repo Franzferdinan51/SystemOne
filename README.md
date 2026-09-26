@@ -27,6 +27,14 @@ into shipping products:
 - **Fail-open everywhere** — SystemOne is advisory: it never loads, unloads,
   switches, or evicts your LM Studio model, and every failure path degrades
   to the session proceeding as if routing did not exist.
+- **Decider-inspired decision calibration** — per-answer-type temperature
+  maps (`choice`/`noul`/`score`, fit from logged decision records, pooled
+  fallback under 50 rows), TypeSafe-compatible confidence definitions,
+  a calibration metrics module (`ece`/`brier`/`nll`/`aurc`/selective
+  accuracy + summarize tables, with per-tier ECE in the battery runner),
+  and state-first prompt rows with option shuffling for the decision
+  endpoints. Adapted from Mapika/decider (Apache 2.0) — see
+  [Credits](#credits).
 
 ## Map to Jev's primitives
 
@@ -72,6 +80,19 @@ from systemone.calibration import TemperatureCalibrator, CalibrationExample
 # fit on a few dozen labeled examples of YOUR task
 cal = TemperatureCalibrator().fit(scores, labels)
 eng.set_calibrator(cal)   # systemone() now returns calibrated probabilities
+
+# per-answer-type temperatures for the decision endpoints (choice/noul/score):
+# fit from logged decision records; types with <50 rows use the pooled T
+from systemone.calibration import fit_temperature_by_type
+type_cal = fit_temperature_by_type(records)  # {"type", "gold", "logits"|"probs"}
+eng.set_calibrator(type_cal)  # systemone() applies each question's own T
+```
+
+Or fit from a records file and merge into `calibration.json` (leaves the
+existing pooled route `temperature` untouched):
+
+```bash
+python3 systemone/battery/fit_types.py --records decision_records.jsonl
 ```
 
 ## Pieces
@@ -239,6 +260,15 @@ TypeSafe's confidence model, adapted for local use:
 - **Confidence is the shape of the distribution, collapsed to 0–1.**
   Concentrated on one outcome = confident; spread out = uncertain. (Noul's
   confidence is just max(P(yes), P(no)).)
+
+  The exact definitions (adapted from Mapika/decider's TypeSafe model):
+
+  - **choice:** `(n·p_max − 1) / (n − 1)` — a delta on one option scores 1,
+    a uniform distribution scores 0
+  - **score:** `max(0, 1 − Σᵢ pᵢ·|i−k| / (n−1))` with `k` the argmax level
+    index — 1 when all mass sits on one level, lower as mass spreads onto
+    distant levels
+  - **noul:** `max(P(yes), P(no))` — the probability of the chosen answer
 - **Low confidence is diagnostic.** On a choice it usually means none of the
   options is a clear winner; on a score it means the levels are ambiguous,
   multi-dimensional, or the state doesn't contain enough to go on. Treat
@@ -531,5 +561,12 @@ Set `PYTHONIOENCODING=utf-8` on Windows consoles.
 - **TypeSafe Jev** — the typed-decision API design this project ports to local
   hardware (Jev trains calibration in with RLCD; here it's post-hoc
   temperature/Platt/isotonic calibration fit on the 250-task battery).
+- **[Mapika](https://github.com/Mapika)** —
+  [decider](https://github.com/Mapika/decider) (Apache 2.0): per-answer-type
+  temperature calibration (`temperature_by_type` with pooled fallback under
+  50 rows), the TypeSafe-compatible confidence definitions, the calibration
+  metrics suite (ECE/Brier/NLL/AURC/selective accuracy + summarize tables),
+  and the state-first prompt-row template with option shuffling — adapted
+  into `calibration.py`, `api.py`, `metrics.py`, and `battery/fit_types.py`.
 - **Loki** — design principles ported from their Jev integration
   (decider-never-crosses-trust-boundaries, fail-open at every stage).

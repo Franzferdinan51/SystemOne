@@ -88,6 +88,34 @@ def ece_10bin(y_true: list[int], y_conf: list[float]) -> float:
     return ece
 
 
+def per_tier_stats(results: list[dict]) -> dict:
+    """Per-tier {n, accuracy, ece} over battery results.
+
+    accuracy: fraction of rows with this true tier predicted correctly.
+    ece: binary ECE of correctness vs the reported confidence (calibrated
+    top-1 when the shim provides it), reusing ece_10bin. Stdlib only.
+    """
+    by_tier: dict[str, dict] = {}
+    for r in results:
+        tier = r.get("true_tier")
+        d = by_tier.setdefault(tier, {"n": 0, "correct": 0, "y": [], "c": []})
+        d["n"] += 1
+        ok = r.get("pred_tier") == tier
+        d["correct"] += 1 if ok else 0
+        d["y"].append(1 if ok else 0)
+        conf = r.get("confidence")
+        d["c"].append(conf if isinstance(conf, (int, float)) else 0.0)
+    out = {}
+    for tier in sorted(by_tier):
+        d = by_tier[tier]
+        out[tier] = {
+            "n": d["n"],
+            "accuracy": d["correct"] / d["n"] if d["n"] else 0.0,
+            "ece": ece_10bin(d["y"], d["c"]),
+        }
+    return out
+
+
 def percentile(vals: list[float], p: float) -> float:
     if not vals:
         return float("nan")
@@ -175,6 +203,7 @@ def main() -> int:
         failures.append(f"{errors} request errors")
 
     n = len(results)
+    tier_stats: dict = {}
     if n:
         correct = sum(1 for r in results if r["pred_tier"] == r["true_tier"])
         acc = correct / n
@@ -195,6 +224,14 @@ def main() -> int:
                 failures.append(f"ECE {ece:.4f} > {ECE_CEILING}")
         else:
             print("ECE: skipped (no calibrated confidences)")
+
+        # per-tier accuracy + ECE alongside the overall numbers
+        tier_stats = per_tier_stats(results)
+        if tier_stats:
+            print("per-tier accuracy / ECE:")
+            for tier, s in tier_stats.items():
+                print(f"  {tier:10s} n={s['n']:3d} acc={s['accuracy']:.3f} "
+                      f"ece={s['ece']:.4f}")
 
         lat = [r["latency_ms"] for r in results]
         p50, p95 = percentile(lat, 50), percentile(lat, 95)
@@ -229,7 +266,7 @@ def main() -> int:
     with open(out_path, "w", encoding="utf-8") as f:
         json.dump({"base_url": args.base_url, "mode": args.mode,
                    "results": results, "failures": failures,
-                   "warnings": warnings}, f, indent=1)
+                   "warnings": warnings, "per_tier": tier_stats}, f, indent=1)
     print(f"results -> {out_path}")
 
     if not failures and not args.no_update_last_run and n:

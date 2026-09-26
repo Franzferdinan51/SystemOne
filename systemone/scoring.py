@@ -115,6 +115,32 @@ def load_calibration(path: str) -> Optional[Dict[str, Any]]:
         return None
 
 
+def temperature_for(
+    calibration: Optional[Dict[str, Any]], qtype: str = "choice"
+) -> float:
+    """Pick the serving temperature for an answer type from a calibration dict.
+
+    Uses calibration["temperature_by_type"][qtype] when present and sane,
+    else the pooled calibration["temperature"] (decider's <50-rows fallback
+    is encoded by simply omitting the type from the map). Fail-open:
+    anything missing or invalid -> 1.0 (identity).
+    """
+    def _sane(v):
+        try:
+            T = float(v)
+        except (TypeError, ValueError):
+            return None
+        return T if (math.isfinite(T) and T > 0) else None
+
+    if not calibration:
+        return 1.0
+    pooled = _sane(calibration.get("temperature", 1.0))
+    by_type = calibration.get("temperature_by_type")
+    per = _sane(by_type.get(qtype)) if isinstance(by_type, dict) else None
+    T = per if per is not None else pooled
+    return T if T is not None else 1.0
+
+
 def calibrate_probs(probs: Dict[str, float], T: float) -> Dict[str, float]:
     """Temperature-scale an already-normalized distribution.
 
@@ -140,13 +166,17 @@ def top2_margin(probs: Dict[str, float]) -> float:
 
 
 def apply_calibration(
-    probs: Dict[str, float], calibration: Optional[Dict[str, Any]]
+    probs: Dict[str, float],
+    calibration: Optional[Dict[str, Any]],
+    qtype: str = "choice",
 ) -> Dict[str, Any]:
     """Calibrated view of a blended tier distribution.
 
     Returns {calibrated, calibrated_probabilities, margin, uncertain,
     confidence} where confidence is the calibrated P(top1). With no
     calibration file, serves the raw distribution and marks calibrated=False.
+    qtype selects the per-answer-type temperature from the calibration map
+    (decider convention); the tier route is a "choice" question.
     """
     if not calibration:
         vals = sorted(probs.values(), reverse=True)
@@ -159,7 +189,7 @@ def apply_calibration(
             "uncertain": False,  # unknown without calibration; don't guess
             "confidence": round(p1, 4),
         }
-    T = float(calibration["temperature"])
+    T = temperature_for(calibration, qtype)
     cal = calibrate_probs(probs, T)
     margin = top2_margin(cal)
     floor = margin_floor()

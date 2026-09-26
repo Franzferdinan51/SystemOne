@@ -25,7 +25,11 @@ from transformers import AutoTokenizer
 from gliclass import GLiClassModel
 from gliclass.pipeline import ZeroShotClassificationPipeline
 
-from .calibration import TemperatureCalibrator, softmax
+from .calibration import (
+    PerTypeTemperatureCalibrator,
+    TemperatureCalibrator,
+    softmax,
+)
 
 # Smallest-first candidates; the first that loads wins.
 MODEL_CANDIDATES = [
@@ -92,6 +96,7 @@ def _sanitize_detail(err: Exception) -> str:
 # ---------------------------------------------------------------------------
 
 import math
+import random
 
 
 def validate_distribution(
@@ -156,6 +161,131 @@ def with_abstain(options: Sequence[str], label: str = ABSTAIN_LABEL) -> List[str
     if label not in opts:
         opts.append(label)
     return opts
+
+# ---------------------------------------------------------------------------
+# TypeSafe-compatible confidence definitions + state-first prompt rows.
+#
+# Adapted from Mapika/decider (Apache-2.0): decider/systemone.py (confidence
+# formulas) and decider/prompt.py (state-first prompt-row template with
+# option shuffling).
+# ---------------------------------------------------------------------------
+
+
+def choice_confidence(probs: Sequence[float]) -> float:
+    """TypeSafe choice confidence: (n * p_max - 1) / (n - 1).
+
+    The shape of the distribution collapsed to 0-1: a delta on one option
+    scores 1, a uniform distribution scores 0. A single-option question
+    degenerates to p_max.
+    """
+    p = np.asarray(list(probs), dtype=np.float64)
+    n = len(p)
+    if n == 0:
+        return 0.0
+    if n == 1:
+        return float(np.clip(p[0], 0.0, 1.0))
+    return float(np.clip((n * p.max() - 1.0) / (n - 1.0), 0.0, 1.0))
+
+
+def score_confidence(probs: Sequence[float]) -> float:
+    """TypeSafe score confidence: max(0, 1 - sum_i p_i*|i-k| / (n-1)).
+
+    `probs` must be ordered by level; k is the argmax level index. Scores 1
+    when all mass sits on one level, lower the more mass spreads onto
+    distant levels. For two levels this equals the winning probability
+    p_max; a uniform distribution over n levels lands around 0.5-0.67.
+    """
+    p = np.asarray(list(probs), dtype=np.float64)
+    n = len(p)
+    if n == 0:
+        return 0.0
+    if n == 1:
+        return float(np.clip(p[0], 0.0, 1.0))
+    k = int(p.argmax())
+    dist = np.abs(np.arange(n) - k) / (n - 1.0)
+    return float(max(0.0, 1.0 - float(p @ dist)))
+
+
+def noul_confidence(p_yes: float) -> float:
+    """TypeSafe noul confidence: the probability of the chosen answer.
+
+    Value-is-probability: max(P(yes), P(no)).
+    """
+    p = float(p_yes)
+    return float(max(p, 1.0 - p))
+
+
+def _prompt_row(state: str, k: int, text: str, labels: Sequence[str]) -> str:
+    """One state-first decision row (decider's prompt template)."""
+    lines = ["Context:", state, "", f"Question [{k}]: {text}", "Options:"]
+    for i, lab in enumerate(labels):
+        tag = chr(ord("A") + i) if i < 26 else str(i + 1)
+        lines.append(f"({tag}) {lab}")
+    lines += ["", f"Answer [{k}]: ("]
+    return "\n".join(lines)
+
+
+def build_decision_prompts(
+    state: str,
+    questions: Sequence[Dict[str, Any]],
+    *,
+    shuffle_options: bool = False,
+    seed: int | None = None,
+) -> tuple[List[str], List[List[str]]]:
+    """Build one state-first prompt row per question.
+
+    Row template (adapted from decider/prompt.py)::
+
+        Context:
+        <state>
+
+        Question [k]: <text>
+        Options:
+        (A) <option 1>
+        (B) <option 2>
+
+        Answer [k]: (
+
+    Question text defaults: the explicit "prompt" for choice/score, the
+    "statement" for noul, else the question name. Shuffling applies to
+    choice options only -- score levels keep their order and the abstain
+    label (ABSTAIN_LABEL) stays last. Deterministic when `seed` is given.
+
+    Returns (prompts, label_lists): the row per question and the label list
+    the row refers to (shuffled order included), ready for raw_scores().
+    """
+    rng = random.Random(seed)
+    prompts: List[str] = []
+    label_lists: List[List[str]] = []
+    for k, q in enumerate(questions, 1):
+        qtype = q.get("type")
+        if qtype == "choice":
+            labs = list(q.get("options") or [])
+            text = q.get("prompt") or f"Choose the best option ({q.get('name')})"
+        elif qtype == "score":
+            labs = list(q.get("levels") or [])
+            text = q.get("prompt") or f"Rate the level ({q.get('name')})"
+        elif qtype == "noul":
+            labs = ["yes", "no"]
+            text = q.get("statement") or q.get("prompt") or q.get("name")
+        else:
+            raise SystemOneError(
+                f"unknown question type: {qtype!r}",
+                hint="expected one of: choice, score, noul",
+            )
+        if not labs:
+            raise SystemOneError(
+                f"question {q.get('name')!r} has no options/levels",
+                hint="choice needs 'options', score needs 'levels'",
+            )
+        if shuffle_options and qtype == "choice" and len(labs) > 1:
+            pinned = [lab for lab in labs if lab == ABSTAIN_LABEL]
+            rest = [lab for lab in labs if lab != ABSTAIN_LABEL]
+            rng.shuffle(rest)
+            labs = rest + pinned
+        prompts.append(_prompt_row(state, k, text, labs))
+        label_lists.append(labs)
+    return prompts, label_lists
 
 
 class StallGuard:
@@ -222,7 +352,9 @@ class SystemOne:
         device: "cuda", "mps", "cpu", or None / "auto" (auto-detect:
             CUDA if available, else Apple MPS, else CPU).
         temperature: softmax temperature for output probabilities (1.0 = raw).
-        calibrator: optional fitted TemperatureCalibrator; overrides temperature.
+        calibrator: optional fitted TemperatureCalibrator or
+            PerTypeTemperatureCalibrator (per-answer-type temperature map,
+            adapted from Mapika/decider); overrides temperature.
     """
 
     def __init__(
@@ -265,13 +397,25 @@ class SystemOne:
         self.calibrator = calibrator
 
     # -- calibration ----------------------------------------------------
-    def set_calibrator(self, calibrator: TemperatureCalibrator) -> None:
-        """Attach a fitted TemperatureCalibrator (overrides temperature)."""
+    def set_calibrator(
+        self, calibrator: TemperatureCalibrator | PerTypeTemperatureCalibrator
+    ) -> None:
+        """Attach a fitted calibrator (overrides temperature).
+
+        A PerTypeTemperatureCalibrator applies the question's own temperature
+        (decider's >=1.4.0 semantics); a plain TemperatureCalibrator applies
+        one pooled temperature to every question type.
+        """
         self.calibrator = calibrator
 
-    def _probs(self, scores: np.ndarray) -> np.ndarray:
-        if self.calibrator is not None and getattr(self.calibrator, "fitted_", False):
-            return np.asarray(self.calibrator.predict_proba([scores])[0])
+    def _probs(self, scores: np.ndarray, qtype: str = "choice") -> np.ndarray:
+        cal = self.calibrator
+        if cal is not None and getattr(cal, "fitted_", False):
+            if hasattr(cal, "temperature_for"):
+                # per-answer-type map: the fitted temperature for THIS
+                # question type is actually applied (decider >=1.4.0).
+                return np.asarray(cal.predict_proba(scores, qtype))
+            return np.asarray(cal.predict_proba([scores])[0])
         T = self.temperature if self.temperature > 0 else 1.0
         return softmax(np.asarray(scores, dtype=np.float64) / T)
 
@@ -311,6 +455,9 @@ class SystemOne:
         state: str,
         questions: Sequence[Dict[str, Any]],
         batch_size: int = 32,
+        build_prompts: bool = True,
+        shuffle_options: bool = False,
+        prompt_seed: int | None = None,
     ) -> Dict[str, Any]:
         """Answer multiple typed questions about `state` in one batched pass.
 
@@ -318,6 +465,17 @@ class SystemOne:
           choice: {"options": [str, ...], "prompt": optional str}
           score:  {"levels": [str, ...],  "prompt": optional str}  (ordered)
           noul:   {"statement": str}  (yes/no question about the state)
+
+        When build_prompts is True (default), every question gets a
+        state-first prompt row (see build_decision_prompts). shuffle_options
+        shuffles choice options in the row (seeded by prompt_seed); score
+        levels keep their order and the abstain label stays last. Pass
+        build_prompts=False for the legacy behavior (explicit prompt or None
+        straight to the pipeline).
+
+        Confidence follows the TypeSafe definitions (adapted from
+        Mapika/decider): choice (n*p_max-1)/(n-1), score
+        max(0, 1 - sum_i p_i*|i-k|/(n-1)), noul max(P(yes), P(no)).
 
         Returns {name: answer_dict, ..., "_meta": {...}}.
         """
@@ -330,24 +488,32 @@ class SystemOne:
             state = state[:MAX_STATE_CHARS]
             state_capped = True
 
-        label_lists: List[List[str]] = []
-        prompts: List[str | None] = []
-        for q in questions:
-            qtype = q["type"]
-            if qtype == "choice":
-                label_lists.append(list(q["options"]))
-                prompts.append(q.get("prompt"))
-            elif qtype == "score":
-                label_lists.append(list(q["levels"]))
-                prompts.append(q.get("prompt"))
-            elif qtype == "noul":
-                label_lists.append(["yes", "no"])
-                prompts.append(q.get("statement") or q.get("prompt"))
-            else:
-                raise SystemOneError(
-                    f"unknown question type: {qtype!r}",
-                    hint="expected one of: choice, score, noul",
-                )
+        if build_prompts:
+            prompts, label_lists = build_decision_prompts(
+                state,
+                questions,
+                shuffle_options=shuffle_options,
+                seed=prompt_seed,
+            )
+        else:
+            label_lists = []
+            prompts = []
+            for q in questions:
+                qtype = q["type"]
+                if qtype == "choice":
+                    label_lists.append(list(q["options"]))
+                    prompts.append(q.get("prompt"))
+                elif qtype == "score":
+                    label_lists.append(list(q["levels"]))
+                    prompts.append(q.get("prompt"))
+                elif qtype == "noul":
+                    label_lists.append(["yes", "no"])
+                    prompts.append(q.get("statement") or q.get("prompt"))
+                else:
+                    raise SystemOneError(
+                        f"unknown question type: {qtype!r}",
+                        hint="expected one of: choice, score, noul",
+                    )
 
         t0 = time.perf_counter()
         score_dicts = self.raw_scores(
@@ -359,10 +525,9 @@ class SystemOne:
         answers: Dict[str, Any] = {}
         for q, labs, sdict in zip(questions, label_lists, score_dicts):
             scores = np.array([sdict[lab] for lab in labs], dtype=np.float64)
-            probs = self._probs(scores)
-            prob_map = {lab: float(p) for lab, p in zip(labs, probs)}
-            conf = float(probs.max())
             qtype = q["type"]
+            probs = self._probs(scores, qtype=qtype)
+            prob_map = {lab: float(p) for lab, p in zip(labs, probs)}
             if qtype == "choice":
                 best = labs[int(probs.argmax())]
                 validate_distribution(prob_map, labs, best)
@@ -370,7 +535,7 @@ class SystemOne:
                     "type": "choice",
                     "choice": best,
                     "probabilities": prob_map,
-                    "confidence": conf,
+                    "confidence": choice_confidence(probs),
                 }
             elif qtype == "score":
                 best = labs[int(probs.argmax())]
@@ -379,7 +544,7 @@ class SystemOne:
                     "type": "score",
                     "level": best,
                     "distribution": prob_map,
-                    "confidence": conf,
+                    "confidence": score_confidence(probs),
                 }
             else:  # noul
                 p_yes = prob_map["yes"]
@@ -389,7 +554,7 @@ class SystemOne:
                     "type": "noul",
                     "probability": p_yes,
                     "answer": bool(p_yes >= 0.5),
-                    "confidence": float(max(p_yes, 1.0 - p_yes)),
+                    "confidence": noul_confidence(p_yes),
                 }
 
         answers["_meta"] = {
