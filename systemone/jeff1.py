@@ -36,6 +36,7 @@ DEFAULT_TIMEOUT = 2.5
 DEFAULT_BLEND = 0.5
 _RANK_PLANS_PATH = "/v1/jeff1/rank-plans"
 _SECOND_OPINION_PATH = "/v1/jeff1/second-opinion"
+_DECIDE_PATH = "/v1/jeff1/decide"
 
 _OFF_VALUES = {"0", "false", "no", "off", "disabled"}
 
@@ -218,3 +219,24 @@ def blend_rankings(
     blended.sort(key=lambda r: (r["score"] is not None, r["score"]),
                  reverse=True)
     return blended
+
+
+def decide_via_jeff1(
+    payload: Dict[str, Any],
+    timeout: Optional[float] = None,
+) -> Optional[Dict[str, Any]]:
+    """Forward a typed decision request to the sidecar's /v1/jeff1/decide.
+
+    ``payload``: {"state", "instructions", "criteria", "type"} — the
+    sidecar's decide schema (the same shape the shim's
+    /v1/systemone/decide accepts). Returns the sidecar's reply dict,
+    validated to carry a known "type", or None on any failure — sidecar
+    down, timeout, HTTP 404 (endpoint not deployed yet), malformed body.
+    Never raises: fail-open everywhere, like the other helpers here.
+    """
+    body = _post(_DECIDE_PATH, payload, timeout)
+    if body is None:
+        return None
+    if body.get("type") not in ("choice", "noul", "score"):
+        return None
+    return body

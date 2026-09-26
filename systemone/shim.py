@@ -26,6 +26,12 @@ Endpoints:
                               consults the Jeff-1 sidecar when enabled and
                               blends its P(plan succeeds | task) 50/50 with
                               the GLiClass scores (fail-open)
+    POST /v1/systemone/decide
+                              typed decision: {"state", "instructions",
+                              "criteria", "type"} — proxy to the Jeff-1
+                              sidecar when reachable (backend "jeff1"),
+                              else answer locally with the GLiClass engine
+                              (backend "fallback", fail-open)
     GET  /healthz, /           liveness
 
 Request body for /v1/systemone (TypeSafe dialect):
@@ -82,6 +88,7 @@ Only one local model is ever loaded, same as the rest of the package.
 from __future__ import annotations
 
 import argparse
+from collections import deque
 import datetime
 import json
 import logging
@@ -92,7 +99,7 @@ import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from logging.handlers import RotatingFileHandler
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 from .api import MAX_STATE_CHARS, SystemOne, validate_choice
 from .scoring import (
@@ -114,10 +121,14 @@ from .scoring import (
 )
 from .jeff1 import (
     blend_rankings,
+    decide_via_jeff1,
     jeff1_enabled,
+    jeff1_url,
     rank_plans_via_jeff1,
     second_opinion as jeff1_second_opinion,
 )
+from .calibration import load_type_calibration
+from .metrics import summarize as summarize_metrics
 
 # -- model router -----------------------------------------------------------
 
@@ -918,6 +929,274 @@ def translate_answers(answers: Dict[str, Any]) -> Dict[str, Any]:
     return out
 
 
+# -- typed decision endpoint (/v1/systemone/decide) --------------------------
+#
+# Request/response schema mirrors the Jeff-1 sidecar's POST /v1/jeff1/decide
+# so the shim can proxy (primary) or answer locally (fail-open fallback)
+# with identical response shapes. Request validation mirrors the sidecar's
+# decide validators; the fallback runs the very same GLiClass machinery as
+# /v1/systemone — state-first prompt rows via build_decision_prompts(),
+# the question's own per-type temperature when the engine carries a fitted
+# per-answer-type map, and the TypeSafe-compatible confidence helpers.
+# Confidence/temperature conventions are adapted from Mapika/decider
+# (Apache-2.0); the implementation here is original.
+
+DECIDE_TYPES = ("choice", "noul", "score")
+"""Answer types accepted by /v1/systemone/decide."""
+
+_DECIDE_METRICS_LOG_NAME = "decide-metrics.log"
+_DECIDE_RECORDS_MAX = 5000
+
+
+def _decide_instructions(body: Dict[str, Any]) -> str:
+    instructions = body.get("instructions")
+    if not isinstance(instructions, str) or not instructions.strip():
+        raise ValueError("request must include a non-empty 'instructions' string")
+    return instructions.strip()
+
+
+def _decide_choice_criteria(raw: Any) -> Dict[str, Optional[str]]:
+    """choice criteria -> ordered {label: description} (mirrors the sidecar)."""
+    if not isinstance(raw, dict) or not raw:
+        raise ValueError(
+            "'criteria' must be a non-empty mapping of label -> description")
+    criteria: Dict[str, Optional[str]] = {}
+    for label, desc in raw.items():
+        if not isinstance(label, str) or not label:
+            raise ValueError("criteria labels must be non-empty strings")
+        if desc is not None and not isinstance(desc, str):
+            raise ValueError(
+                f"description for label '{label}' must be a string or null")
+        criteria[label] = desc
+    return criteria
+
+
+def _decide_score_levels(raw: Any) -> List[Tuple[str, Optional[str]]]:
+    """score criteria -> [(level_label, description)] in level order.
+
+    Accepts a dict keyed by contiguous level indexes "0".."n-1" or an
+    ordered list of level descriptions (mirrors the sidecar).
+    """
+    indexed: Dict[int, Any] = {}
+    if isinstance(raw, list) and raw:
+        indexed = dict(enumerate(raw))
+    elif isinstance(raw, dict) and raw:
+        for key in raw:
+            try:
+                i = int(key)
+            except (TypeError, ValueError):
+                raise ValueError(
+                    "score 'criteria' keys must be level indexes '0'..'n-1'")
+            if i < 0 or i in indexed:
+                raise ValueError(
+                    "score 'criteria' keys must be level indexes '0'..'n-1'")
+            indexed[i] = raw[key]
+    else:
+        raise ValueError(
+            "score 'criteria' must be a non-empty list of level descriptions "
+            "or a mapping '0'..'n-1' -> description")
+    n = len(indexed)
+    if sorted(indexed) != list(range(n)):
+        raise ValueError(
+            "score 'criteria' keys must be contiguous level indexes '0'..'n-1'")
+    levels: List[Tuple[str, Optional[str]]] = []
+    for i in range(n):
+        desc = indexed[i]
+        if desc is not None and not isinstance(desc, str):
+            raise ValueError(
+                f"description for level '{i}' must be a string or null")
+        levels.append((str(i), desc))
+    return levels
+
+
+def _decide_noul_descriptions(raw: Any) -> Tuple[Optional[str], Optional[str]]:
+    """Optional noul criteria -> (yes_desc, no_desc) (mirrors the sidecar)."""
+    if raw is None:
+        return None, None
+    if isinstance(raw, dict):
+        yes_desc, no_desc = raw.get("yes"), raw.get("no")
+    elif isinstance(raw, (list, tuple)) and len(raw) == 2:
+        yes_desc, no_desc = raw[0], raw[1]
+    else:
+        raise ValueError(
+            "'criteria' for noul must be null, a {yes, no} mapping, "
+            "or a 2-item [yes, no] list")
+    for name, desc in (("yes", yes_desc), ("no", no_desc)):
+        if desc is not None and not isinstance(desc, str):
+            raise ValueError(f"'criteria.{name}' must be a string or null")
+    return yes_desc, no_desc
+
+
+def _decide_labels_block(qtype: str, instructions: str,
+                         criteria: Any) -> Tuple[str, List[str], str]:
+    """Validate decide criteria -> (qtype, ordered labels, prompt text).
+
+    The prompt text embeds the label descriptions so the local GLiClass
+    fallback sees the same criterion definitions the sidecar would.
+    """
+    if qtype == "choice":
+        crit = _decide_choice_criteria(criteria)
+        labels = list(crit.keys())
+        lines = [instructions, "", "Labels:"]
+        for lab, desc in crit.items():
+            lines.append(f"- {lab}" + (f": {desc}" if desc else ""))
+        return qtype, labels, "\n".join(lines).strip()
+    if qtype == "score":
+        levels = _decide_score_levels(criteria)
+        labels = [lab for lab, _ in levels]
+        lines = [instructions, "", "Levels (in order):"]
+        for lab, desc in levels:
+            lines.append(f"- {lab}" + (f": {desc}" if desc else ""))
+        return qtype, labels, "\n".join(lines).strip()
+    yes_desc, no_desc = _decide_noul_descriptions(criteria)
+    lines = [instructions]
+    if yes_desc:
+        lines.append(f"'yes' means: {yes_desc}")
+    if no_desc:
+        lines.append(f"'no' means: {no_desc}")
+    return qtype, ["yes", "no"], "\n".join(lines).strip()
+
+
+def _fallback_decide(engine: Any, state_text: str, qtype: str,
+                     labels: List[str], prompt: str
+                     ) -> Tuple[Dict[str, Any], List[float]]:
+    """Answer one typed decision with the local GLiClass engine.
+
+    The fail-open path behind /v1/systemone/decide: the very same
+    machinery as /v1/systemone — engine.systemone() builds state-first
+    prompt rows (build_decision_prompts), applies the question's own
+    per-type temperature when the engine carries a fitted
+    PerTypeTemperatureCalibrator, and reports the TypeSafe-compatible
+    confidence helpers (Mapika/decider semantics, Apache-2.0).
+
+    Returns (sidecar-shaped decision dict, ordered probability vector).
+    """
+    if qtype == "noul":
+        question: Dict[str, Any] = {"name": "decision", "type": "noul",
+                                    "statement": prompt}
+    elif qtype == "score":
+        question = {"name": "decision", "type": "score", "levels": labels,
+                    "prompt": prompt}
+    else:
+        question = {"name": "decision", "type": "choice", "options": labels,
+                    "prompt": prompt}
+    answers = engine.systemone(state_text, [question])
+    ans = answers["decision"]
+    if qtype == "choice":
+        probs = [float(ans["probabilities"][lab]) for lab in labels]
+        return {
+            "type": "choice",
+            "label": ans["choice"],
+            "probabilities": {lab: round(p, 4) for lab, p in zip(labels, probs)},
+            "confidence": round(float(ans["confidence"]), 4),
+        }, probs
+    if qtype == "score":
+        probs = [float(ans["distribution"][lab]) for lab in labels]
+        return {
+            "type": "score",
+            "level": ans["level"],
+            "distribution": {lab: round(p, 4) for lab, p in zip(labels, probs)},
+            "confidence": round(float(ans["confidence"]), 4),
+        }, probs
+    p_yes = float(ans["probability"])
+    probs = [p_yes, 1.0 - p_yes]
+    return {
+        "type": "noul",
+        "label": "yes" if ans["answer"] else "no",
+        "probabilities": {"yes": round(p_yes, 4), "no": round(1.0 - p_yes, 4)},
+        "confidence": round(float(ans["confidence"]), 4),
+    }, probs
+
+
+def _decide_temperature_info(engine: Any,
+                             qtype: str) -> Optional[Dict[str, Any]]:
+    """Per-type temperature info for the decide response.
+
+    Reported only when the engine actually carries a fitted
+    per-answer-type calibrator (decider's >=1.4.0 applied-per-type
+    semantics); otherwise the key is omitted from the response.
+    """
+    cal = getattr(engine, "calibrator", None)
+    if cal is None or not getattr(cal, "fitted_", False):
+        return None
+    if not hasattr(cal, "temperature_for"):
+        return None
+    try:
+        per_type = {
+            str(t): float(v)
+            for t, v in dict(getattr(cal, "temperature_by_type_", {}) or {}).items()
+        }
+        return {
+            "applied": float(cal.temperature_for(qtype)),
+            "pooled": float(cal.temperature_),
+            "per_type": per_type,
+        }
+    except Exception:
+        return None
+
+
+def record_decide_metric(server: Any, record: Dict[str, Any]) -> None:
+    """Record one fallback decision for offline calibration and metrics.
+
+    Kept in a bounded in-memory deque on the server and appended to a
+    JSONL log (logs/decide-metrics.log; SYSTEMONE_DECIDE_LOG_FILE
+    overrides; SYSTEMONE_LOG_DISABLE=1 silences). Records carry no gold
+    labels at serve time, so ECE/Brier/NLL are computed later by
+    decide_metrics_summary() over gold-annotated rows (e.g. backfilled by
+    a calibration battery). Never raises.
+    """
+    try:
+        rec = dict(record)
+        rec["ts"] = datetime.datetime.now(datetime.timezone.utc).isoformat()
+        buf = getattr(server, "decide_records", None)
+        if buf is not None:
+            buf.append(rec)
+        if os.environ.get("SYSTEMONE_LOG_DISABLE") == "1":
+            return
+        path = os.environ.get("SYSTEMONE_DECIDE_LOG_FILE") or os.path.join(
+            os.path.dirname(__file__), "logs", _DECIDE_METRICS_LOG_NAME)
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "a", encoding="utf-8") as f:
+            f.write(json.dumps(rec) + "\n")
+    except Exception:
+        pass
+
+
+def decide_metrics_summary(
+    records: Sequence[Dict[str, Any]],
+) -> Dict[str, Dict[str, float]]:
+    """Per-type ECE/Brier/NLL via systemone.metrics for gold-annotated rows.
+
+    Pure function: groups records carrying a valid integer "gold" label by
+    "type" and returns {type: metrics.summarize(...)} — decider's summarize
+    convention (accuracy, ece_15, brier, nll, aurc, selective accuracies;
+    metric definitions adapted from Mapika/decider, Apache-2.0). Records
+    without gold are skipped; types with no gold rows are absent.
+    """
+    groups: Dict[str, Dict[str, List[Any]]] = {}
+    for r in records:
+        if not isinstance(r, dict):
+            continue
+        try:
+            qtype = str(r["type"]).lower()
+            probs = [float(x) for x in r["probs"]]
+            gold = int(r["gold"])
+            if not (0 <= gold < len(probs)) or qtype not in DECIDE_TYPES:
+                continue
+        except (KeyError, TypeError, ValueError):
+            continue
+        g = groups.setdefault(qtype, {"y": [], "P": []})
+        g["y"].append(gold)
+        g["P"].append(probs)
+    out: Dict[str, Dict[str, float]] = {}
+    for qtype, g in groups.items():
+        try:
+            out[qtype] = summarize_metrics(g["y"], g["P"], name=qtype)
+        except Exception:
+            continue
+    return out
+
+
 class ShimHandler(BaseHTTPRequestHandler):
     """HTTP handler; the engine is attached as `server.engine`,
     the tier registry as `server.registry`."""
@@ -1029,6 +1308,67 @@ class ShimHandler(BaseHTTPRequestHandler):
             "usage": {},
         }
 
+
+    def _handle_decide(self) -> tuple[int, Dict[str, Any]]:
+        """POST /v1/systemone/decide -> (status, payload).
+
+        Body: {"state", "instructions", "criteria", "type"} — the Jeff-1
+        sidecar's decide schema. The primary path proxies the request to
+        the sidecar (backend "jeff1"); when the sidecar is unreachable,
+        404s (endpoint not deployed yet), or returns a malformed reply,
+        the request fails open to the local GLiClass engine
+        (backend "fallback") via the same machinery as /v1/systemone.
+        """
+        body = self._read_body()
+        if not isinstance(body, dict):
+            raise ValueError("request body must be a JSON object")
+        if "state" not in body:
+            raise ValueError("request must include 'state'")
+        instructions = _decide_instructions(body)
+        qtype = body.get("type")
+        if qtype not in DECIDE_TYPES:
+            raise ValueError("'type' must be one of 'choice', 'noul', 'score'")
+        qtype, labels, prompt = _decide_labels_block(
+            qtype, instructions, body.get("criteria"))
+        state_text = state_to_text(body["state"])
+        if len(state_text) > MAX_STATE_CHARS:
+            state_text = state_text[:MAX_STATE_CHARS]
+
+        t0 = time.perf_counter()
+        jeff1 = decide_via_jeff1({
+            "state": body["state"],
+            "instructions": instructions,
+            "criteria": body.get("criteria"),
+            "type": qtype,
+        })
+        if jeff1 is not None:
+            payload = dict(jeff1)
+            payload["backend"] = "jeff1"
+            payload["latency_ms"] = round((time.perf_counter() - t0) * 1000.0, 1)
+            return 200, payload
+
+        # Fail-open fallback: the local GLiClass decision path.
+        decision, ordered_probs = _fallback_decide(
+            self.server.engine, state_text, qtype, labels, prompt)
+        latency_ms = round((time.perf_counter() - t0) * 1000.0, 1)
+        payload = dict(decision)
+        payload["backend"] = "fallback"
+        payload["latency_ms"] = latency_ms
+        payload["model"] = getattr(self.server.engine, "model_name", "?")
+        temp_info = _decide_temperature_info(self.server.engine, qtype)
+        if temp_info is not None:
+            payload["temperature"] = temp_info
+        record_decide_metric(self.server, {
+            "type": qtype,
+            "labels": labels,
+            "probs": ordered_probs,
+            "confidence": payload.get("confidence"),
+            "latency_ms": latency_ms,
+            "backend": "fallback",
+            "model": getattr(self.server.engine, "model_name", "?"),
+        })
+        return 200, payload
+
     def do_GET(self) -> None:  # noqa: N802
         if self.path in ("/", "/healthz"):
             self._send_json(200, {"ok": True, "model": self.server.engine.model_name})
@@ -1063,11 +1403,18 @@ class ShimHandler(BaseHTTPRequestHandler):
                     "n_plans": len(payload.get("ranking", [])),
                     "top_plan": (payload.get("ranking") or [{}])[0].get("id"),
                 }
+            elif self.path == "/v1/systemone/decide":
+                status, payload = self._handle_decide()
+                extra = {
+                    "decide_type": payload.get("type"),
+                    "backend": payload.get("backend"),
+                }
             else:
                 status = 404
                 payload = {
                     "error": "not found, POST /v1/systemone, "
-                             "/v1/systemone/route or /v1/systemone/rank-plans"
+                             "/v1/systemone/route, /v1/systemone/rank-plans "
+                             "or /v1/systemone/decide"
                 }
         except (ValueError, KeyError) as e:
             status, payload = 400, {"error": f"bad request: {e}"}
@@ -1144,9 +1491,13 @@ def serve(
     """Build (but do not block on) the shim server.
 
     Loads calibration.json (temperature for the blended tier distribution;
-    absent -> serve raw, calibrated=false) and tool_registry.json. Starts a
-    daemon thread refreshing model availability from the LM Studio inventory
-    (fail-open; registry values stand when LM Studio is unreachable).
+    absent -> serve raw, calibrated=false) and tool_registry.json. When the
+    bundled calibration.json also carries a per-answer-type temperature map,
+    it is attached to the engine so every decision endpoint serves each
+    question type at its own fitted temperature (decider's applied-per-type
+    semantics). Starts a daemon thread refreshing model availability from
+    the LM Studio inventory (fail-open; registry values stand when LM
+    Studio is unreachable).
     """
     engine = engine or SystemOne(model_name=os.environ.get("SYSTEMONE_MODEL"))
     server = ThreadingHTTPServer(("127.0.0.1", port), ShimHandler)
@@ -1155,6 +1506,21 @@ def serve(
     server.registry = reg  # type: ignore[attr-defined]
     server.calibration = load_calibration(CALIBRATION_PATH)  # type: ignore[attr-defined]
     server.tools = load_tool_registry(TOOL_REGISTRY_PATH)  # type: ignore[attr-defined]
+    # Per-answer-type temperature map for the decision path (fail-open:
+    # absent or pooled-only calibration.json leaves the engine untouched).
+    server.type_calibration = None  # type: ignore[attr-defined]
+    try:
+        type_cal = load_type_calibration(CALIBRATION_PATH)
+        if type_cal is not None:
+            if hasattr(engine, "set_calibrator"):
+                engine.set_calibrator(type_cal)
+            server.type_calibration = type_cal  # type: ignore[attr-defined]
+    except Exception:
+        pass
+    # Bounded ring of fallback-decision records for offline calibration
+    # and ECE/Brier/NLL metrics (see record_decide_metric /
+    # decide_metrics_summary).
+    server.decide_records = deque(maxlen=_DECIDE_RECORDS_MAX)  # type: ignore[attr-defined]
     # One quick inventory probe at startup (fail-open), then background refresh.
     try:
         ids = fetch_lmstudio_models()
