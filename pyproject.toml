@@ -31,6 +31,7 @@ dev = ["pytest"]
 
 [project.scripts]
 systemone = "systemone.cli:main"
+systemone-acp = "systemone.acp_server:main"
 
 [tool.setuptools.packages.find]
 include = ["systemone*"]

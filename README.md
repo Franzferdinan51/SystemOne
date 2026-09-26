@@ -100,6 +100,99 @@ existing pooled route `temperature` untouched):
 python3 systemone/battery/fit_types.py --records decision_records.jsonl
 ```
 
+## Agent interface — CLI, MCP, ACP
+
+Everything below talks to the **live shim** (`python3 -m systemone.shim --port 8765`),
+never loads a model in-process. The shim URL resolves in this order:
+`--shim-url` → `$SYSTEMONE_SHIM_URL` → `http://127.0.0.1:8765`.
+
+### Install
+
+```bash
+pip install -e .          # or: pip install systemone
+systemone --help          # route / decide / status / battery (+ legacy local/ask/serve)
+systemone-acp --help      # ACP agent (stdio)
+```
+
+### CLI
+
+```bash
+$ systemone route "Write a SQL query to find duplicate customer emails in the users table"
+tier       : balanced
+confidence : 0.8537  (margin 0.7555)
+model      : ornith-1.5-9b
+effort     : medium
+uncertain  : False
+rationale  : Task 'Write a SQL query to find duplicate customer emails in the users table' -> 'balanced' (ornith-1.5-9b): ...
+
+$ systemone decide --type noul --state "The deploy pipeline is green and all checks passed" \
+    --instructions "Is it safe to deploy to production right now?"
+backend    : jeff1
+answer     : yes  (P(yes)=0.9510, confidence 0.9510)
+latency    : 231.6 ms
+
+$ systemone decide --type choice --state "CI is green, canary at 5% error budget intact" \
+    --instructions "Which deploy action should we take?" \
+    --criteria ship="deploy to production now" --criteria hold="wait for the next window" \
+    --criteria rollback="roll back the canary"
+backend    : jeff1
+choice     : ship  (confidence 0.7987)
+probabilities:
+    ship                     0.8658 #################
+    hold                     0.1078 ##
+    rollback                 0.0264 #
+latency    : 262.7 ms
+
+$ systemone status
+shim       : http://127.0.0.1:8765
+  ok       : yes  (engine model: knowledgator/gliclass-edge-v3.0)
+  decide   : backend=jeff1  latency=84.7 ms  confidence=0.8149
+```
+
+Every command also takes `--json` for machine-readable output, plus global
+`--shim-url` and `--timeout`. `systemone battery` forwards its arguments
+verbatim to the calibration battery (`systemone/battery/run.py`), and
+`systemone local` / `ask` / `serve` keep the legacy in-process engine.
+
+### MCP (stdio)
+
+`python3 -m systemone.mcp_server` exposes the legacy local tools
+(`typesafe_ask`, `verify_claims`, `screen_content`, `rank_candidates`) plus
+four live-shim tools:
+
+| tool | maps to |
+|---|---|
+| `systemone_route` | `POST /v1/systemone/route` — tier, confidence, margin, model |
+| `systemone_decide` | `POST /v1/systemone/decide` — choice / score / noul |
+| `systemone_status` | shim health + active decide backend |
+| `systemone_rank_plans` | `POST /v1/systemone/rank-plans` |
+
+Add to a client's MCP config, e.g.:
+
+```json
+{"mcpServers": {"systemone": {
+  "command": "python3", "args": ["-m", "systemone.mcp_server"],
+  "env": {"SYSTEMONE_SHIM_URL": "http://127.0.0.1:8765"}
+}}}
+```
+
+### ACP agent (stdio)
+
+`systemone-acp` is a minimal ACP v1 agent (newline JSON-RPC on stdio, no extra
+dependencies) exposing exactly two commands to the user:
+
+- `/route [--cost-bias economy|balanced|quality] [--tiers a,b] <task>`
+- `/decide` + a fenced JSON block (`type`/`state`/`instructions`/`criteria`)
+
+It routes/decides through the live shim and reports each step as ACP
+`session/update` notifications (tool calls + streamed message chunks).
+
+### Decide backends
+
+`decide` runs on **Jeff-1** (GestaltLabs/Jeff-1) when its sidecar is reachable
+and fails open to the **Mapika decider** fallback (Mapika/decider, Apache 2.0).
+`systemone status` shows which backend answered.
+
 ## Pieces
 
 - **`api.py`** — `SystemOne`: loads one GLiClass checkpoint (edge → small → base,

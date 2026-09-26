@@ -1,6 +1,15 @@
 """MCP server exposing the System One API as agent tools (stdio).
 
-Tools:
+Two tool families:
+
+Shim tools (default; talk to the live shim over HTTP — no model is loaded
+by this process):
+- systemone_route:   cheapest sufficient tier for a task (+confidence/margin)
+- systemone_decide:  one typed decision (choice | noul | score)
+- systemone_status:  shim + sidecar health, decision backend in use
+- systemone_rank_plans: order plans by P(success | task)
+
+Legacy local tools (load a GLiClass checkpoint in-process, one at a time):
 - typesafe_ask: Jev-compatible typed judgments (choice / score / noul) over
   application state. Same question interface as Loki's `typesafe_ask` tool,
   but fully local — NO TYPESAFE_API_KEY needed.
@@ -15,8 +24,11 @@ Run:  python -m systemone.mcp_server
 or:   systemone-mcp   (if installed)
 
 Configure with env vars:
-  SYSTEMONE_MODEL       HF model id (default: smallest available, edge first)
-  SYSTEMONE_DEVICE      cuda | mps | cpu  (default: auto — CUDA, else Apple MPS, else CPU)
+  SYSTEMONE_SHIM_URL  shim base URL for the systemone_* tools
+                      (default: http://127.0.0.1:8765)
+  SYSTEMONE_MODEL     HF model id for the legacy local tools
+                      (default: smallest available, edge first)
+  SYSTEMONE_DEVICE    cuda | mps | cpu  (default: auto — CUDA, else Apple MPS, else CPU)
   SYSTEMONE_CALIBRATOR  path to a pickled TemperatureCalibrator (optional)
 """
 
@@ -30,11 +42,25 @@ from mcp.server.fastmcp import FastMCP
 
 from .api import SystemOne
 from .calibration import TemperatureCalibrator
+from .client import ShimError, SystemOneClient, default_shim_url
 
 mcp = FastMCP("systemone")
 
 _engine: SystemOne | None = None
 _engine_model: str | None = None
+
+_client: SystemOneClient | None = None
+_client_url: str | None = None
+
+
+def get_client() -> SystemOneClient:
+    """Return the shared shim client (rebuilt if $SYSTEMONE_SHIM_URL changed)."""
+    global _client, _client_url
+    url = default_shim_url()
+    if _client is None or _client_url != url:
+        _client = SystemOneClient(url)
+        _client_url = url
+    return _client
 
 
 def get_engine(model_name: str | None = None) -> SystemOne:
@@ -367,6 +393,109 @@ def rank_candidates(query: str, candidates: List[str]) -> List[dict]:
     ]
     ranked.sort(key=lambda r: r["relevance"], reverse=True)
     return ranked
+
+
+# -- systemone_* shim tools: thin HTTP clients over the live shim ----------
+
+_ERROR_KEY = "error"
+
+
+def _shim_error(exc: ShimError) -> Dict[str, Any]:
+    return {_ERROR_KEY: str(exc)}
+
+
+def _route_impl(
+    task: str,
+    cost_bias: str = "balanced",
+    tiers: List[str] | None = None,
+) -> Dict[str, Any]:
+    try:
+        payload = get_client().route(task, cost_bias=cost_bias, tiers=tiers)
+    except ShimError as exc:
+        return _shim_error(exc)
+    return payload.get("route", {})
+
+
+@mcp.tool()
+def systemone_route(
+    task: str,
+    cost_bias: str = "balanced",
+    tiers: List[str] | None = None,
+) -> Dict[str, Any]:
+    """Route a task to the cheapest sufficient model tier (via the live shim).
+
+    Returns the route dict: tier, confidence, margin, calibrated
+    probabilities, rationale, model_id, effort, and the uncertain flag.
+    cost_bias is one of economy | balanced | quality. No model is loaded by
+    this tool — the shim owns its registry.
+    """
+    return _route_impl(task, cost_bias=cost_bias, tiers=tiers)
+
+
+def _decide_impl(
+    state: Any,
+    instructions: str,
+    criteria: Any = None,
+    type: str = "choice",
+) -> Dict[str, Any]:
+    try:
+        return get_client().decide(
+            state, instructions, criteria=criteria, type=type
+        )
+    except ShimError as exc:
+        return _shim_error(exc)
+
+
+@mcp.tool()
+def systemone_decide(
+    state: Any,
+    instructions: str,
+    criteria: Any = None,
+    type: str = "choice",
+) -> Dict[str, Any]:
+    """One typed decision via the live shim's decide endpoint.
+
+    type: "choice" | "noul" | "score". criteria: choice -> {label: desc},
+    noul -> {"true": ..., "false": ...} (optional), score -> ordered list of
+    level descriptions. Returns label/level + probabilities/distribution +
+    confidence + backend ("jeff1" sidecar or "fallback"). No model is loaded
+    by this tool.
+    """
+    return _decide_impl(state, instructions, criteria=criteria, type=type)
+
+
+def _status_impl() -> Dict[str, Any]:
+    try:
+        return get_client().status()
+    except ShimError as exc:  # status() is defensive; belt-and-braces
+        return _shim_error(exc)
+
+
+@mcp.tool()
+def systemone_status() -> Dict[str, Any]:
+    """Shim + sidecar health: liveness, engine model, decision backend in use."""
+    return _status_impl()
+
+
+def _rank_plans_impl(
+    task: str, plans: List[Dict[str, Any]]
+) -> Dict[str, Any]:
+    try:
+        return get_client().rank_plans(task, plans)
+    except ShimError as exc:
+        return _shim_error(exc)
+
+
+@mcp.tool()
+def systemone_rank_plans(
+    task: str, plans: List[Dict[str, Any]]
+) -> Dict[str, Any]:
+    """Order plans by P(success | task), with the routed tier's cost penalty.
+
+    plans: [{"id": ..., "text": ...}, ...]. Returns the shim's ranking
+    (ordered best-first) plus the tier it was scored under.
+    """
+    return _rank_plans_impl(task, plans)
 
 
 def main() -> None:

@@ -1,21 +1,25 @@
-"""systemone CLI — local equivalent of Loki's `/jev` commands.
+"""systemone CLI — agent-friendly command line for a live SystemOne shim.
 
-No API keys here (everything is local), so the commands are about engine
-health and one-shot judgments instead of credential management:
+Two modes:
 
-    python -m systemone.cli status
-        # engine config check WITHOUT loading a model:
-        #   configured model, device, calibrator, mcp lib compatibility
+Shim-client commands (talk to the deployed shim over HTTP; they never load
+a model themselves — the shim URL comes from $SYSTEMONE_SHIM_URL or
+--shim-url, default http://127.0.0.1:8765):
 
-    python -m systemone.cli status --load
-        # also loads the model once and reports real latency
+    systemone route "summarize this quarter's revenue" [--json]
+    systemone decide --type choice --state "..." --instructions "..." \\
+        --criteria a="first option" --criteria b="second option" [--json]
+    systemone status [--json]            # shim + sidecar health
+    systemone battery [--mode live]      # regression battery vs the shim
 
-    python -m systemone.cli ask --state "..." --questions questions.json
-        # one-shot typesafe_ask; questions.json is a list of
-        # {"id","type","instructions","criteria"} (or "-" for stdin)
+Local commands (run against this machine's engine):
 
-Decision tools and routing are separate capabilities, mirroring Loki's
-`/jev` design: allowing one does not imply the other.
+    systemone local [--load]            # engine config check (old `status`)
+    systemone ask --state "..." --questions questions.json
+    systemone serve [--port 8765]       # run the shim (foreground)
+
+Every output command accepts --json for agent-consumable output; the
+default is human-readable.
 """
 
 from __future__ import annotations
@@ -26,6 +30,7 @@ import os
 import sys
 
 from .api import MAX_STATE_CHARS, MODEL_CANDIDATES, SystemOne, SystemOneError, default_device
+from .client import ShimError, SystemOneClient, default_shim_url
 
 
 def _env_model() -> str:
@@ -36,11 +41,169 @@ def _env_device() -> str:
     return (os.environ.get("SYSTEMONE_DEVICE") or "auto").strip()
 
 
+def _make_client(args: argparse.Namespace) -> SystemOneClient:
+    return SystemOneClient(base_url=args.shim_url, timeout=args.timeout)
+
+
+# -- shim-client commands -------------------------------------------------
+
+
+def _print_json(payload: object) -> None:
+    print(json.dumps(payload, indent=2, ensure_ascii=False, default=str))
+
+
+def cmd_route(args: argparse.Namespace) -> int:
+    """Tier routing for a task description via the live shim."""
+    try:
+        payload = _make_client(args).route(
+            args.task, cost_bias=args.cost_bias, tiers=args.tiers
+        )
+    except ShimError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
+    route = payload.get("route", {})
+    if args.json:
+        _print_json(route)
+        return 0
+    tier = route.get("tier", "?")
+    conf = route.get("confidence")
+    margin = route.get("margin")
+    conf_s = f"{conf:.4f}" if isinstance(conf, (int, float)) else "n/a"
+    margin_s = f"{margin:.4f}" if isinstance(margin, (int, float)) else "n/a"
+    print(f"tier       : {tier}")
+    print(f"confidence : {conf_s}  (margin {margin_s})")
+    print(f"model      : {route.get('model_id', 'n/a')}")
+    print(f"effort     : {route.get('effort', 'n/a')}")
+    uncertain = route.get("uncertain")
+    if uncertain is not None:
+        print(f"uncertain  : {uncertain}")
+    print(f"rationale  : {route.get('rationale', 'n/a')}")
+    return 0
+
+
+def _parse_criteria(args: argparse.Namespace) -> object:
+    """Build the decide criteria from --criteria-json or --criteria pairs."""
+    if args.criteria_json is not None:
+        try:
+            return json.loads(args.criteria_json)
+        except json.JSONDecodeError as exc:
+            raise SystemExit(f"error: --criteria-json is not valid JSON: {exc}")
+    pairs = []
+    for raw in args.criteria or []:
+        if "=" in raw:
+            label, desc = raw.split("=", 1)
+            pairs.append((label.strip(), desc.strip() or None))
+        else:
+            pairs.append((raw.strip(), None))
+    pairs = [(lab, desc) for lab, desc in pairs if lab]
+    if args.type == "score":
+        # Score levels are positional on the shim: the ORDER of the
+        # descriptions defines the levels, low -> high.
+        return [desc if desc else lab for lab, desc in pairs] or None
+    return {lab: desc for lab, desc in pairs} or None
+
+
+def _fmt_prob_table(dist: dict) -> list:
+    lines = []
+    for label, prob in dist.items():
+        try:
+            bar = "#" * int(round(float(prob) * 20))
+        except (TypeError, ValueError):
+            bar = ""
+        lines.append(f"    {label:<24} {float(prob):.4f} {bar}")
+    return lines
+
+
+def cmd_decide(args: argparse.Namespace) -> int:
+    """One typed decision via the live shim's decide endpoint."""
+    criteria = _parse_criteria(args)
+    try:
+        decision = _make_client(args).decide(
+            args.state, args.instructions, criteria=criteria, type=args.type
+        )
+    except ShimError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
+    if args.json:
+        _print_json(decision)
+        return 0
+    dtype = decision.get("type", args.type)
+    conf = decision.get("confidence")
+    conf_s = f"{conf:.4f}" if isinstance(conf, (int, float)) else "n/a"
+    print(f"backend    : {decision.get('backend', 'n/a')}")
+    if dtype == "choice":
+        print(f"choice     : {decision.get('label', '?')}  (confidence {conf_s})")
+        print("probabilities:")
+        print("\n".join(_fmt_prob_table(decision.get("probabilities", {}) or {})))
+    elif dtype == "score":
+        print(f"level      : {decision.get('level', '?')}  (confidence {conf_s})")
+        print("distribution:")
+        print("\n".join(_fmt_prob_table(decision.get("distribution", {}) or {})))
+    else:  # noul
+        probs = decision.get("probabilities", {}) or {}
+        p_yes = probs.get("yes", decision.get("noul"))
+        p_s = f"{float(p_yes):.4f}" if isinstance(p_yes, (int, float)) else "n/a"
+        print(f"answer     : {decision.get('label', '?')}  "
+              f"(P(yes)={p_s}, confidence {conf_s})")
+    latency = decision.get("latency_ms")
+    if latency is not None:
+        print(f"latency    : {latency} ms")
+    return 0
+
+
 def cmd_status(args: argparse.Namespace) -> int:
-    """Config/health check. Only loads a model with --load (one at a time)."""
+    """Shim + sidecar health: liveness, engine model, decision backend."""
+    try:
+        info = _make_client(args).status(probe=not args.no_probe)
+    except ShimError as exc:  # status() is defensive; this is belt-and-braces
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
+    if args.json:
+        _print_json(info)
+        return 0
+    shim = info.get("shim") or {}
+    print(f"shim       : {info.get('shim_url', '?')}")
+    if shim.get("ok"):
+        print(f"  ok       : yes  (engine model: {shim.get('model', 'n/a')})")
+    else:
+        print(f"  ok       : NO — {shim.get('error', 'unknown error')}")
+        return 1
+    decision = info.get("decision")
+    if decision is None:
+        print("  decide   : probe skipped (--no-probe)")
+    elif "error" in decision:
+        print(f"  decide   : probe failed — {decision['error']}")
+    else:
+        print(f"  decide   : backend={decision.get('backend', 'n/a')}  "
+              f"latency={decision.get('latency_ms', 'n/a')} ms  "
+              f"confidence={decision.get('confidence', 'n/a')}")
+    return 0
+
+
+def cmd_battery(args: argparse.Namespace) -> int:
+    """Run the regression battery against the live shim (passthrough args)."""
+    from .battery import run as battery_run
+
+    passthrough = list(getattr(args, "passthrough", None) or [])
+    saved = sys.argv
+    sys.argv = ["systemone battery", *passthrough]
+    try:
+        return int(battery_run.main() or 0)
+    finally:
+        sys.argv = saved
+
+
+# -- local commands -------------------------------------------------------
+
+
+def cmd_local(args: argparse.Namespace) -> int:
+    """Config/health check of the LOCAL engine (no shim involved).
+
+    Only loads a model with --load (one at a time).
+    """
     import torch
 
-    print("systemone status")
+    print("systemone local")
     print(f"  configured model : {_env_model()}")
     mps = getattr(torch.backends, "mps", None)
     mps_ok = bool(mps is not None and mps.is_available())
@@ -59,7 +222,8 @@ def cmd_status(args: argparse.Namespace) -> int:
     try:
         import mcp  # noqa: F401
 
-        print(f"  mcp lib          : ok ({mcp.__version__ if hasattr(mcp, '__version__') else 'installed'})")
+        print(f"  mcp lib          : ok "
+              f"({mcp.__version__ if hasattr(mcp, '__version__') else 'installed'})")
     except Exception as exc:
         print(f"  mcp lib          : PROBLEM ({exc})")
 
@@ -83,7 +247,7 @@ def cmd_status(args: argparse.Namespace) -> int:
 
 
 def cmd_ask(args: argparse.Namespace) -> int:
-    """One-shot typed judgments over a state, Jev-style."""
+    """One-shot typed judgments over a state, Jev-style (local engine)."""
     src = args.questions
     try:
         raw = sys.stdin.read() if src == "-" else open(src, encoding="utf-8").read()
@@ -159,20 +323,87 @@ def cmd_serve(args: argparse.Namespace) -> int:
     return 0
 
 
-def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(prog="systemone", description="Local System One CLI")
-    sub = parser.add_subparsers(dest="cmd", required=True)
+def build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        prog="systemone",
+        description="SystemOne agent CLI — route tasks and make typed "
+                    "decisions via a live shim (or drive the local engine).",
+    )
+    parser.add_argument(
+        "--shim-url", default=None,
+        help=f"shim base URL (default: $SYSTEMONE_SHIM_URL or {default_shim_url()})",
+    )
+    parser.add_argument(
+        "--timeout", type=float, default=120.0,
+        help="HTTP timeout in seconds for shim calls (default 120)",
+    )
+    sub = parser.add_subparsers(dest="cmd", required=True, metavar="command")
 
-    p_status = sub.add_parser("status", help="engine health check")
-    p_status.add_argument("--load", action="store_true",
-                          help="also load the model and run a latency probe")
+    # -- shim-client commands --
+    p_route = sub.add_parser(
+        "route", help="route a task to the cheapest sufficient tier (via shim)")
+    p_route.add_argument("task", help="task description to route")
+    p_route.add_argument(
+        "--cost-bias", default="balanced",
+        choices=("economy", "balanced", "quality"),
+        help="cost/capability bias (default balanced)")
+    p_route.add_argument(
+        "--tiers", default=None,
+        help="comma-separated tier subset to route over, e.g. economy,balanced")
+    p_route.add_argument("--json", action="store_true",
+                         help="emit the raw route dict as JSON")
+    p_route.set_defaults(func=cmd_route)
+
+    p_decide = sub.add_parser(
+        "decide", help="one typed decision: choice | noul | score (via shim)")
+    p_decide.add_argument("--type", required=True,
+                          choices=("choice", "noul", "score"),
+                          help="decision type")
+    p_decide.add_argument("--instructions", required=True,
+                          help="the judgment to make")
+    p_decide.add_argument("--state", required=True,
+                          help="state text the decision is about")
+    p_decide.add_argument(
+        "--criteria", action="append", default=[],
+        metavar="label=description",
+        help="repeatable criterion. choice/noul: label=description pairs; "
+             "score: descriptions in level order (label part ignored).")
+    p_decide.add_argument(
+        "--criteria-json", default=None, metavar="JSON",
+        help='criteria as JSON (choice: {"label": "desc"}, '
+              'score: ["level 1", "level 2"], noul: {"true": "..", "false": ".."})')
+    p_decide.add_argument("--json", action="store_true",
+                          help="emit the raw decide payload as JSON")
+    p_decide.set_defaults(func=cmd_decide)
+
+    p_status = sub.add_parser(
+        "status", help="shim + sidecar health, decision backend in use")
+    p_status.add_argument("--no-probe", action="store_true",
+                          help="skip the tiny decide probe (shim liveness only)")
+    p_status.add_argument("--json", action="store_true",
+                          help="emit the status dict as JSON")
     p_status.set_defaults(func=cmd_status)
 
-    p_ask = sub.add_parser("ask", help="one-shot typed judgments (Jev-style)")
+    p_battery = sub.add_parser(
+        "battery", help="regression battery vs the live shim (args pass through)")
+    p_battery.add_argument("args", nargs=argparse.REMAINDER,
+                           help="arguments forwarded to systemone.battery.run")
+    p_battery.set_defaults(func=cmd_battery)
+
+    # -- local commands --
+    p_local = sub.add_parser(
+        "local", help="local engine health check (no shim)")
+    p_local.add_argument("--load", action="store_true",
+                         help="also load the model and run a latency probe")
+    p_local.set_defaults(func=cmd_local)
+
+    p_ask = sub.add_parser("ask", help="one-shot typed judgments (local engine)")
     p_ask.add_argument("--state", required=True, help="state text to judge")
     p_ask.add_argument("--questions", required=True,
-                       help='JSON file with [{"id","type","instructions","criteria"}] or "-" for stdin')
-    p_ask.add_argument("--model", default=None, help="GLiClass checkpoint (default: env/smallest)")
+                       help='JSON file with [{"id","type","instructions","criteria"}] '
+                            'or "-" for stdin')
+    p_ask.add_argument("--model", default=None,
+                       help="GLiClass checkpoint (default: env/smallest)")
     p_ask.set_defaults(func=cmd_ask)
 
     p_serve = sub.add_parser("serve", help="run the shim server (foreground)")
@@ -184,7 +415,29 @@ def main(argv: list[str] | None = None) -> int:
                          help="Jeff-1 sidecar port (default 8079)")
     p_serve.set_defaults(func=cmd_serve)
 
-    args = parser.parse_args(argv)
+    return parser
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = build_parser()
+    # Split the battery passthrough verbatim: everything after the `battery`
+    # subcommand token goes straight to battery.run.main, in order, so the
+    # battery's own flags never touch this parser.
+    raw = list(sys.argv[1:] if argv is None else argv)
+    passthrough: list[str] | None = None
+    for i, tok in enumerate(raw):
+        if tok == "battery":
+            passthrough = raw[i + 1:]
+            if passthrough[:1] == ["--"]:
+                passthrough = passthrough[1:]
+            raw = raw[: i + 1]
+            break
+    args = parser.parse_args(raw)
+    if args.cmd == "battery":
+        args.passthrough = passthrough or []
+    tiers = getattr(args, "tiers", None)
+    if tiers is not None:  # normalize "a,b" -> ["a", "b"]
+        args.tiers = [t.strip() for t in tiers.split(",") if t.strip()] or None
     return int(args.func(args) or 0)
 
 
