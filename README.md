@@ -694,9 +694,6 @@ The Windows shim runs as the scheduled task `\SystemOneShim` (SYSTEM, on
 start), launched via `C:\Users\Duckets\bin\start-shim.bat`
 (`pythonw -m systemone.shim --port 8765` from the ZCode runtime dir).
 
-**Gaming mode** (Windows PC): `C:\Users\Duckets\bin\gaming-mode-on.bat`
-stops the sidecar, AskOne, the shim, LM Studio, and stray AI processes to
-free the GPU; `gaming-mode-off.bat` restarts the three scheduled tasks.
 
 (The shim defaults to `SYSTEMONE_JEFF1_URL=http://127.0.0.1:8079`, so a
 shim on the same box as the sidecar needs no extra config.)
