@@ -697,6 +697,7 @@ def _handle_decide(engine: Union[Jeff1Engine, DeciderEngine],
         ordered_probs = [float(probs[lab]) for lab in ordered]
         confidence = choice_confidence(ordered_probs)
         return {
+            "backend": decision_backend(),
             "type": "choice",
             "label": str(label),
             "probabilities": {lab: round(float(probs[lab]), 4)
@@ -710,6 +711,7 @@ def _handle_decide(engine: Union[Jeff1Engine, DeciderEngine],
         p_yes = min(1.0, max(0.0, p_yes))
         confidence = noul_confidence(p_yes)
         return {
+            "backend": decision_backend(),
             "type": "noul",
             "label": "yes" if p_yes >= 0.5 else "no",
             "probabilities": {"yes": round(p_yes, 4),
@@ -729,6 +731,7 @@ def _handle_decide(engine: Union[Jeff1Engine, DeciderEngine],
     ordered_probs = [float(probs[lab]) for lab in ordered]
     confidence = score_confidence(ordered_probs)
     return {
+        "backend": decision_backend(),
         "type": "score",
         "level": str(label),
         "distribution": {lab: round(float(probs[lab]), 4) for lab in ordered},

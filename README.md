@@ -114,6 +114,20 @@ systemone --help          # route / decide / status / battery (+ legacy local/as
 systemone-acp --help      # ACP agent (stdio)
 ```
 
+#### First-run check
+
+After install, probe the live shim — this installs nothing and never fails
+the setup; it only reports what's reachable:
+
+```bash
+systemone status          # shim liveness + decide-backend probe
+```
+
+If the shim isn't up you'll see `ok: NO` — that's fine. Everything degrades
+gracefully: route/decide calls fail open (local fallback or skip) instead of
+breaking. Point the CLI at a remote shim with `SYSTEMONE_SHIM_URL`
+(default `http://127.0.0.1:8765`).
+
 ### CLI
 
 ```bash
@@ -189,9 +203,14 @@ It routes/decides through the live shim and reports each step as ACP
 
 ### Decide backends
 
-`decide` runs on **Jeff-1** (GestaltLabs/Jeff-1) when its sidecar is reachable
-and fails open to the **Mapika decider** fallback (Mapika/decider, Apache 2.0).
-`systemone status` shows which backend answered.
+`decide` is answered by the decision sidecar, whose engine is selected by
+`SYSTEMONE_DECISION_BACKEND` — `jeff1` (default, the rollback target) or
+`decider` ([Mapika/decider-4b](https://huggingface.co/Mapika/decider-4b),
+Apache 2.0; the PC sidecar runs it — see [Decision backend: Jeff-1 or
+decider-4b](#decision-backend-jeff-1-or-decider-4b)). When the sidecar is
+unreachable the shim fails open to the local GLiClass path (backend
+`"fallback"`). `systemone status` shows which backend actually answered
+the probe.
 
 ## Pieces
 

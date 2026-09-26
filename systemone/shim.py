@@ -1312,11 +1312,13 @@ class ShimHandler(BaseHTTPRequestHandler):
     def _handle_decide(self) -> tuple[int, Dict[str, Any]]:
         """POST /v1/systemone/decide -> (status, payload).
 
-        Body: {"state", "instructions", "criteria", "type"} — the Jeff-1
+        Body: {"state", "instructions", "criteria", "type"} — the decision
         sidecar's decide schema. The primary path proxies the request to
-        the sidecar (backend "jeff1"); when the sidecar is unreachable,
-        404s (endpoint not deployed yet), or returns a malformed reply,
-        the request fails open to the local GLiClass engine
+        the sidecar, whose engine is selected by SYSTEMONE_DECISION_BACKEND
+        on the sidecar (backend "jeff1"|"decider"; jeff1 is the default and
+        the rollback target). When the sidecar is unreachable, 404s
+        (endpoint not deployed yet), or returns a malformed reply, the
+        request fails open to the local GLiClass engine
         (backend "fallback") via the same machinery as /v1/systemone.
         """
         body = self._read_body()
@@ -1343,7 +1345,10 @@ class ShimHandler(BaseHTTPRequestHandler):
         })
         if jeff1 is not None:
             payload = dict(jeff1)
-            payload["backend"] = "jeff1"
+            # Trust the sidecar's own backend report (jeff1|decider per
+            # SYSTEMONE_DECISION_BACKEND); fall back to the historic label
+            # for older sidecars that don't report one.
+            payload["backend"] = jeff1.get("backend") or "jeff1"
             payload["latency_ms"] = round((time.perf_counter() - t0) * 1000.0, 1)
             return 200, payload
 

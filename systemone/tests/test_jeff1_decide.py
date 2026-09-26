@@ -302,3 +302,23 @@ def test_decide_503_when_weights_fail():
         server.server_close()
     assert code == 503
     assert "error" in body
+
+
+# -- backend reporting --------------------------------------------------------
+
+
+def test_decide_reports_active_backend(sidecar, monkeypatch):
+    """The sidecar stamps decide replies with the active engine backend
+    (SYSTEMONE_DECISION_BACKEND): jeff1 by default, decider when selected."""
+    sidecar.engine = _StubEngine(noul_p=0.8)
+    payload = {"state": "x", "instructions": "Is it true?", "type": "noul"}
+
+    monkeypatch.setenv("SYSTEMONE_DECISION_BACKEND", "decider")
+    code, body = _post(sidecar, payload)
+    assert code == 200
+    assert body["backend"] == "decider"
+
+    monkeypatch.delenv("SYSTEMONE_DECISION_BACKEND", raising=False)
+    code, body = _post(sidecar, payload)
+    assert code == 200
+    assert body["backend"] == "jeff1"

@@ -435,3 +435,21 @@ def test_decide_via_jeff1_disabled_is_fail_open(monkeypatch, fake_sidecar):
     monkeypatch.setenv("SYSTEMONE_JEFF1", "0")
     assert decide_via_jeff1({"type": "choice"}, timeout=5) is None
     assert _FakeSidecar.seen == []  # never even attempted
+
+
+def test_proxy_path_preserves_sidecar_backend(server, monkeypatch):
+    """The shim passes through the backend the sidecar reported (decider),
+    instead of stamping every proxied answer "jeff1"."""
+    _, port, engine = server
+    monkeypatch.setattr(
+        shim, "decide_via_jeff1",
+        lambda payload, timeout=None: {
+            "type": "noul", "label": "yes",
+            "probabilities": {"yes": 0.9, "no": 0.1}, "confidence": 0.9,
+            "backend": "decider"})
+    code, body = _post_decide(port, {
+        "state": "x", "instructions": "Is it true?", "type": "noul",
+    })
+    assert code == 200
+    assert body["backend"] == "decider"
+    assert body["label"] == "yes"

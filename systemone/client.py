@@ -11,8 +11,11 @@ Stdlib only (urllib) — no extra dependencies for the agent layer.
 
 No model IDs are hard-coded here: routing and decisions are delegated to
 the shim, which owns its model registry. The decide endpoint is served by
-the Jeff-1 decision sidecar (GestaltLabs/Jeff-1, Apache-2.0) with a
-fail-open local GLiClass fallback — see the shim's decide contract.
+the decision sidecar — engine selected by SYSTEMONE_DECISION_BACKEND on
+the sidecar: "jeff1" (GestaltLabs/Jeff-1, Apache-2.0; the default and the
+rollback target) or "decider" (Mapika/decider-4b, Apache-2.0) — with a
+fail-open local GLiClass fallback (backend "fallback") when the sidecar
+is unreachable. See the shim's decide contract.
 """
 
 from __future__ import annotations
@@ -127,7 +130,8 @@ class SystemOneClient:
         type: "choice" | "noul" | "score". criteria: choice -> {label: desc},
         noul -> {"true": ..., "false": ...} (optional), score -> ordered list
         of level descriptions. Returns the decide payload, including
-        "backend": "jeff1" | "fallback".
+        "backend": "jeff1" | "decider" (whichever engine the sidecar ran)
+        or "fallback" (local GLiClass fail-open).
         """
         body: Dict[str, Any] = {
             "state": state,
@@ -149,9 +153,9 @@ class SystemOneClient:
     def status(self, probe: bool = True) -> Dict[str, Any]:
         """Composite health: shim liveness plus the decision backend in use.
 
-        The decision backend ("jeff1" sidecar vs "fallback" GLiClass) is only
-        observable by asking for a decision, so status() runs one tiny noul
-        probe unless probe=False.
+        The decision backend ("jeff1" | "decider" sidecar engine vs
+        "fallback" GLiClass) is only observable by asking for a decision,
+        so status() runs one tiny noul probe unless probe=False.
         """
         out: Dict[str, Any] = {
             "shim_url": self.base_url,
