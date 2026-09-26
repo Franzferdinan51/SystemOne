@@ -1,7 +1,11 @@
-"""Jeff-1 sidecar server — GestaltLabs/Jeff-1 as a second decision head.
+"""Decision sidecar server — a second decision head for SystemOne.
 
-Standalone stdlib HTTP server (like systemone.shim): loads the Jeff-1 LoRA
-adapter once — lazily, on the first POST — then serves:
+The decision backend is selectable at runtime: Jeff-1 (default, the
+rollback target) or Mapika/decider-4b v2.1
+(SYSTEMONE_DECISION_BACKEND=decider).
+
+Standalone stdlib HTTP server (like systemone.shim): loads the backend
+model once — lazily, on the first POST — then serves:
 
     POST /v1/jeff1/rank-plans
         {"task": "...", "plans": [{"id": "...", "text": "..."}]}
@@ -23,7 +27,7 @@ adapter once — lazily, on the first POST — then serves:
          "type": "choice" | "noul" | "score"}
         -> {"type": "choice", "label": "...", "probabilities": {...},
             "confidence": 0.72, "latency_ms": 12.3}
-        Generic typed decision over the Jeff-1 readout heads. "noul"
+        Generic typed decision over the backend's readout heads. "noul"
         answers yes/no (criteria optional: {"yes","no"} or [yes, no]);
         "score" rates ordered levels — criteria is either a list of
         level descriptions or a dict keyed "0".."n-1".
@@ -31,24 +35,30 @@ adapter once — lazily, on the first POST — then serves:
         systemone/api.py (adapted from Mapika/decider, Apache-2.0).
 
     GET /healthz (and GET /)
-        -> {"ok": true, "model": "<base>+<adapter>", "device": "mps",
-            "loaded": true}
+        -> {"ok": true, "model": "<backend model id>", "device": "<device>",
+            "loaded": true, "load_error": null}
 
-Environment (no hard-coded model ids or knobs):
+Environment:
 
-    JEFF1_ADAPTER_ID   default "GestaltLabs/Jeff-1"
-    JEFF1_BASE_ID      default "Qwen/Qwen3-4B-Instruct-2507"
-    JEFF1_DEVICE       default auto: cuda -> mps -> cpu
-    JEFF1_MAX_LENGTH   default "2048"
+    SYSTEMONE_DECISION_BACKEND   "jeff1" (default, the rollback target) or
+                                 "decider" (Mapika/decider-4b v2.1)
+    JEFF1_ADAPTER_ID   default "GestaltLabs/Jeff-1" (jeff1 backend)
+    JEFF1_BASE_ID      default "Qwen/Qwen3-4B-Instruct-2507" (jeff1 backend)
+    JEFF1_DEVICE       default auto: cuda -> mps -> cpu (jeff1 backend)
+    JEFF1_MAX_LENGTH   default "2048" (jeff1 backend)
+    DECIDER_REPO_ID    default "Mapika/decider-4b" (decider backend)
+    DECIDER_REVISION   default "eb5fbdfc9448473ec25e399882912863afbdb70e"
+                       (decider-4b v2.1, merged bf16 — a version pin, not a
+                       model choice; the benchmarked weights)
     JEFF1_HOST         bind address, default "127.0.0.1" (also: --host;
                        use "0.0.0.0" or the tailnet IP to serve other machines)
     JEFF1_PORT         default "8079" (also: --port)
 
-Memory: the 4B bf16 base + LoRA adapter needs ~8-9 GB of device memory. On
-Apple Silicon (MPS) that comes out of the Mac's unified pool — the Mac mini
-(M4 Pro, 24 GB) holds the sidecar alongside the GLiClass shim comfortably.
-The Windows PC never runs this process; its shim points
-SYSTEMONE_JEFF1_URL at the Mac sidecar instead.
+The sidecar runs on the Windows PC (moved off the Mac mini 2026-09-25);
+the Mac shim points SYSTEMONE_JEFF1_URL at it over the tailnet.
+
+Jeff-1 backend: the 4B bf16 base + LoRA adapter needs ~8-9 GB of device
+memory.
 
 Label scoring is ported from Gestalt-Lab/jeff's jev_clf/readout.py
 (Apache-2.0): the prompt is question text + "\\n\\nState:\\n" + state +
@@ -58,6 +68,17 @@ when labels have distinct first tokens (choice, yes/no), the whole-sequence
 readout when they share one (score levels "0".."3" all start with the
 bare-space token). The system prompt is kept verbatim from the jeff client
 (it is what the adapter was fine-tuned with).
+
+Decider backend: Mapika/decider-4b (Apache-2.0,
+https://huggingface.co/Mapika/decider-4b), served through the decider-ai
+package's Decider (device="cuda", use_graphs=False — the CUDA-graph path
+recompiles per prompt shape in this serving pattern and goes CPU-bound).
+v2.1 ships as merged bf16 weights (~10 GB VRAM), pinned to the
+benchmarked HF revision. Serving temperatures are the model's own
+decider_config.json temperature_by_type, fitted by NLL on decider's
+isolated-levels readout — never overridden here. Score answers use the
+native isolated-levels readout: the prediction is argmax over the level
+probabilities, never the rounded score expectation.
 
 Run:  python -m systemone.jeff1_sidecar [--port 8079]
 """
@@ -70,7 +91,7 @@ import os
 import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple, Union
 
 # TypeSafe-compatible confidence helpers (choice_confidence,
 # noul_confidence, score_confidence) — confidence semantics adapted from
@@ -80,6 +101,17 @@ from .api import choice_confidence, noul_confidence, score_confidence
 
 DEFAULT_ADAPTER_ID = "GestaltLabs/Jeff-1"
 DEFAULT_BASE_ID = "Qwen/Qwen3-4B-Instruct-2507"
+
+# Decider backend pin: Mapika/decider-4b v2.1 (Apache-2.0), merged bf16
+# weights. The revision is resolved to a local HF snapshot dir before
+# Decider() is constructed, so the exact benchmarked weights load even if
+# the repo's main branch moves. Override via DECIDER_REPO_ID /
+# DECIDER_REVISION only when you know why.
+DECIDER_REPO_ID = "Mapika/decider-4b"
+DECIDER_REVISION = "eb5fbdfc9448473ec25e399882912863afbdb70e"
+
+#: Valid SYSTEMONE_DECISION_BACKEND values.
+DECISION_BACKENDS = ("jeff1", "decider")
 
 _SYSTEM = (
     "You are a fact-checking classifier. You are given a claim and the evidence "
@@ -108,6 +140,19 @@ def max_length() -> int:
         return n if n > 0 else 2048
     except (TypeError, ValueError):
         return 2048
+
+
+def decision_backend() -> str:
+    """Active decision backend: "jeff1" (default) or "decider"."""
+    return _env("SYSTEMONE_DECISION_BACKEND", "jeff1").lower()
+
+
+def decider_repo_id() -> str:
+    return _env("DECIDER_REPO_ID", DECIDER_REPO_ID)
+
+
+def decider_revision() -> str:
+    return _env("DECIDER_REVISION", DECIDER_REVISION)
 
 
 def resolve_device() -> str:
@@ -292,17 +337,172 @@ class Jeff1Engine:
         labels = [(label, criteria.get(label)) for label in criteria]
         return self._judge(state, instructions, labels)
 
+    def score(self, state: Any, instructions: str,
+              criteria: Dict[str, Optional[str]]
+              ) -> Tuple[str, Dict[str, float], float]:
+        """(level, probabilities, confidence) — choice over "0".."n-1"."""
+        return self.choice(state, instructions, criteria)
 
-_ENGINE: Optional[Jeff1Engine] = None
+
+# -- decider backend (Mapika/decider-4b v2.1, Apache-2.0) ----------------------
+
+
+class DeciderEngine:
+    """Lazy Mapika/decider backend: choice / noul / score judgments.
+
+    Wraps decider-ai's Decider (Mapika/decider, Apache-2.0 — see
+    https://huggingface.co/Mapika/decider-4b) with the Jeff1Engine-shaped
+    interface: choice(state, instructions, criteria) -> (label, probs, conf),
+    noul(state, instructions, yes_desc, no_desc) -> P(yes),
+    score(state, instructions, criteria) -> (level, probs, conf).
+
+    v2.1 ships as MERGED bf16 weights (not a LoRA): the pinned HF revision
+    is resolved to a local snapshot dir via huggingface_hub before
+    Decider() is constructed, so the exact benchmarked weights load even
+    if the repo's main branch moves on.
+
+    use_graphs=False: the CUDA-graph path recompiles per prompt shape in
+    this serving pattern (benchmark: 10 items in ~11 min, CPU-bound);
+    eager is the production default until graphs are proven safe here.
+
+    Temperatures are the model's own decider_config.json
+    temperature_by_type (choice/noul/score fitted by NLL on the
+    isolated-levels readout) — never overridden: passing temperature=
+    would switch the per-type map off and miscalibrate serving.
+
+    Score uses decider's native isolated-levels readout (one yes/no row
+    per level, combined with combine_isolated): the prediction is argmax
+    over answer["probabilities"] — never the rounded "score" field, which
+    is the expectation over the combined distribution.
+    """
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._decider: Any = None
+        self.device = "cuda"
+        self.model_id = f"{decider_repo_id()}@{decider_revision()[:12]}"
+        self.load_error: Optional[str] = None
+
+    @property
+    def loaded(self) -> bool:
+        return self._decider is not None
+
+    def load(self) -> None:
+        """Resolve the pinned revision, then build the Decider.
+
+        Raises on failure (callers catch -> 503). snapshot_download is a
+        no-op when the pinned revision is already cached.
+        """
+        with self._lock:
+            if self._decider is not None:
+                return
+            from huggingface_hub import snapshot_download
+            from decider.infer import Decider
+
+            path = snapshot_download(decider_repo_id(),
+                                     revision=decider_revision())
+            dec = Decider(path, device="cuda", use_graphs=False)
+            self._decider = dec
+            self.model_id = (f"{decider_repo_id()}@{decider_revision()[:12]}"
+                             f" ({dec.name})")
+            try:
+                print(f"[decider] loaded {dec.name} "
+                      f"({decider_repo_id()}@{decider_revision()[:12]}) on "
+                      f"{self.device}, layout={dec.layout}, "
+                      f"isolated_levels={dec.isolated_levels}, "
+                      f"temperature_by_type={dec.T_by_type}", flush=True)
+            except Exception:
+                print(f"[decider] loaded {self.model_id} on {self.device}",
+                      flush=True)
+
+    def _ask(self, state: Any, spec: Dict[str, Any]) -> Dict[str, Any]:
+        """One system_one question -> its answer dict.
+
+        Lock-held like Jeff1Engine: the eager path shares no documented
+        per-call state, so requests serialize.
+        """
+        with self._lock:
+            if self._decider is None:
+                raise RuntimeError("decider model not loaded")
+            out = self._decider.system_one(state, {"q": spec})
+        answers = out.get("answers") if isinstance(out, dict) else None
+        if not isinstance(answers, dict) or "q" not in answers:
+            raise RuntimeError("decider returned no answer")
+        return answers["q"]
+
+    def choice(self, state: Any, instructions: str,
+               criteria: Dict[str, Optional[str]]
+               ) -> Tuple[str, Dict[str, float], float]:
+        """(choice, probabilities, confidence) over the criteria labels."""
+        ans = self._ask(state, {"type": "choice",
+                                "instructions": instructions,
+                                "criteria": dict(criteria)})
+        probs = {str(k): float(v)
+                 for k, v in ans["probabilities"].items()}
+        label = str(ans["choice"])
+        return label, probs, max(probs.values())
+
+    def noul(self, state: Any, instructions: str,
+             yes_desc: Optional[str] = None,
+             no_desc: Optional[str] = None) -> float:
+        """P(yes | state)."""
+        spec: Dict[str, Any] = {"type": "noul", "instructions": instructions}
+        crit: Dict[str, str] = {}
+        if yes_desc:
+            crit["true"] = yes_desc
+        if no_desc:
+            crit["false"] = no_desc
+        if crit:
+            spec["criteria"] = crit
+        return float(self._ask(state, spec)["noul"])
+
+    def score(self, state: Any, instructions: str,
+              criteria: Dict[str, Optional[str]]
+              ) -> Tuple[str, Dict[str, float], float]:
+        """(level, probabilities, confidence) — decider's native
+        isolated-levels score: argmax over the level probabilities."""
+        n = len(criteria)
+        legend = [criteria[str(i)] if isinstance(criteria[str(i)], str) else ""
+                  for i in range(n)]
+        ans = self._ask(state, {"type": "score",
+                                "instructions": instructions,
+                                "criteria": legend})
+        probs = {str(k): float(v)
+                 for k, v in ans["probabilities"].items()}
+        # argmax — never the rounded "score" expectation field.
+        level = max(probs, key=probs.get)
+        return level, probs, max(probs.values())
+
+
+_ENGINE: Any = None
 _ENGINE_LOCK = threading.Lock()
 
 
-def get_engine() -> Jeff1Engine:
+def get_engine() -> Any:
+    """Backend factory: SYSTEMONE_DECISION_BACKEND selects the engine.
+
+    "jeff1" (default) is the rollback target; "decider" builds the
+    DeciderEngine. Anything else fails fast with a clear error — a typo
+    here must never silently serve the wrong model.
+    """
     global _ENGINE
     with _ENGINE_LOCK:
         if _ENGINE is None:
-            _ENGINE = Jeff1Engine()
+            backend = decision_backend()
+            if backend == "decider":
+                _ENGINE = DeciderEngine()
+            elif backend == "jeff1":
+                _ENGINE = Jeff1Engine()
+            else:
+                raise ValueError(
+                    f"unknown SYSTEMONE_DECISION_BACKEND={backend!r}; "
+                    f"expected one of {DECISION_BACKENDS}")
         return _ENGINE
+
+
+def _backend_name(engine: Any) -> str:
+    """Short backend name for advisory rationale strings."""
+    return "decider-4b" if isinstance(engine, DeciderEngine) else "Jeff-1"
 
 
 # -- request handling ---------------------------------------------------------
@@ -321,7 +521,7 @@ _OPINION_INSTRUCTIONS = (
 )
 
 
-def _handle_rank_plans(engine: Jeff1Engine,
+def _handle_rank_plans(engine: Union[Jeff1Engine, DeciderEngine],
                        body: Dict[str, Any]) -> Dict[str, Any]:
     task = body.get("task")
     if not isinstance(task, str) or not task.strip():
@@ -345,7 +545,7 @@ def _handle_rank_plans(engine: Jeff1Engine,
     return {"ranking": ranking}
 
 
-def _handle_second_opinion(engine: Jeff1Engine,
+def _handle_second_opinion(engine: Union[Jeff1Engine, DeciderEngine],
                            body: Dict[str, Any]) -> Dict[str, Any]:
     task = body.get("task")
     if not isinstance(task, str) or not task.strip():
@@ -372,11 +572,12 @@ def _handle_second_opinion(engine: Jeff1Engine,
     agree = (tier == routed_tier)
     top2 = sorted(probs.values(), reverse=True)
     margin = top2[0] - (top2[1] if len(top2) > 1 else 0.0)
+    name = _backend_name(engine)
     if agree:
-        rationale = (f"Jeff-1 agrees with '{routed_tier}' "
+        rationale = (f"{name} agrees with '{routed_tier}' "
                      f"(P={confidence:.2f}, margin {margin:.2f}).")
     else:
-        rationale = (f"Jeff-1 prefers '{tier}' (P={confidence:.2f}) over "
+        rationale = (f"{name} prefers '{tier}' (P={confidence:.2f}) over "
                      f"the routed '{routed_tier}' "
                      f"(P={probs.get(routed_tier, 0.0):.2f}); advisory only.")
     return {"tier": tier, "confidence": round(confidence, 4),
@@ -468,7 +669,7 @@ def _decide_noul_descriptions(raw: Any) -> Tuple[Optional[str], Optional[str]]:
     return yes_desc, no_desc
 
 
-def _handle_decide(engine: Jeff1Engine,
+def _handle_decide(engine: Union[Jeff1Engine, DeciderEngine],
                    body: Dict[str, Any]) -> Dict[str, Any]:
     """Generic typed decision: {"state", "instructions", "criteria", "type"}.
 
@@ -516,10 +717,14 @@ def _handle_decide(engine: Jeff1Engine,
             "confidence": round(confidence, 4),
         }
 
-    # score: engine.choice over "0".."n-1" level labels.
+    # score: engine.score over "0".."n-1" level labels. Jeff-1 reads the
+    # levels out of its own next-token distribution; the decider backend
+    # uses its native isolated-levels readout (one yes/no row per level) —
+    # prediction is argmax over the level probabilities, never the rounded
+    # score expectation.
     levels = _decide_score_levels(body.get("criteria"))
     criteria = {lab: desc for lab, desc in levels}
-    label, probs, _ = engine.choice(state, instructions, criteria)
+    label, probs, _ = engine.score(state, instructions, criteria)
     ordered = [str(i) for i in range(len(levels))]
     ordered_probs = [float(probs[lab]) for lab in ordered]
     confidence = score_confidence(ordered_probs)
@@ -548,9 +753,9 @@ class Jeff1Handler(BaseHTTPRequestHandler):
         length = int(self.headers.get("Content-Length", 0))
         return json.loads(self.rfile.read(length) or b"{}")
 
-    def _ensure_engine(self) -> Jeff1Engine:
+    def _ensure_engine(self) -> Union[Jeff1Engine, DeciderEngine]:
         """Lazy-load on first request; 503 when the weights won't load."""
-        engine: Jeff1Engine = self.server.engine  # type: ignore[attr-defined]
+        engine: Union[Jeff1Engine, DeciderEngine] = self.server.engine  # type: ignore[attr-defined]
         if not engine.loaded:
             try:
                 engine.load()
@@ -561,7 +766,7 @@ class Jeff1Handler(BaseHTTPRequestHandler):
 
     def do_GET(self) -> None:  # noqa: N802
         if self.path in ("/", "/healthz"):
-            engine: Jeff1Engine = self.server.engine  # type: ignore[attr-defined]
+            engine: Union[Jeff1Engine, DeciderEngine] = self.server.engine  # type: ignore[attr-defined]
             self._send_json(200, {
                 "ok": True,
                 "model": engine.model_id,
@@ -610,7 +815,8 @@ def serve(port: int = 8079, host: str = "127.0.0.1") -> ThreadingHTTPServer:
 
 def main(argv: Optional[List[str]] = None) -> None:
     parser = argparse.ArgumentParser(
-        description="Jeff-1 second decision head (sidecar for SystemOne)")
+        description="Decision sidecar for SystemOne "
+                    "(backend: SYSTEMONE_DECISION_BACKEND=jeff1|decider)")
     parser.add_argument("--host", type=str,
                         default=_env("JEFF1_HOST", "127.0.0.1"),
                         help="bind address (0.0.0.0 to serve the tailnet)")
@@ -618,9 +824,9 @@ def main(argv: Optional[List[str]] = None) -> None:
                         default=int(_env("JEFF1_PORT", "8079")))
     args = parser.parse_args(argv)
     engine = get_engine()
-    print(f"jeff-1 sidecar on http://{args.host}:{args.port}/ "
-          f"(adapter {adapter_id()}, base {base_id()}, device {engine.device}; "
-          "model loads lazily on first request, ~8-9 GB)",
+    print(f"decision sidecar on http://{args.host}:{args.port}/ "
+          f"(backend {decision_backend()}, model {engine.model_id}, "
+          f"device {engine.device}; model loads lazily on first request)",
           flush=True)
     serve(args.port, args.host).serve_forever()
 

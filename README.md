@@ -133,10 +133,13 @@ python3 systemone/battery/fit_types.py --records decision_records.jsonl
   it only on uncertain routes (advisory; never changes the tier);
   `/rank-plans` blends its `P(plan succeeds | task)` 50/50 with the
   GLiClass scores.
-- **`jeff1_sidecar.py`** — standalone stdlib HTTP server hosting
-  GestaltLabs/Jeff-1 (LoRA on Qwen3-4B-Instruct-2507) as the second head:
-  `POST /v1/jeff1/rank-plans`, `POST /v1/jeff1/second-opinion`,
-  `GET /healthz`. Lazy model load (~8–9 GB), CUDA → MPS → CPU. See
+- **`jeff1_sidecar.py`** — standalone stdlib HTTP server hosting the
+  second decision head: `POST /v1/jeff1/rank-plans`,
+  `POST /v1/jeff1/second-opinion`, `POST /v1/jeff1/decide`,
+  `GET /healthz`. Backend selectable via `SYSTEMONE_DECISION_BACKEND`:
+  GestaltLabs/Jeff-1 (LoRA on Qwen3-4B-Instruct-2507, the default) or
+  Mapika/decider-4b v2.1 (Apache-2.0, merged bf16). Lazy model load,
+  CUDA → MPS → CPU for Jeff-1, CUDA for decider. See
   "Deployment topologies" below.
 - **`distill.py`** — label with a teacher (`SyntheticTeacher`, `HFTeacher`,
   `LMStudioTeacher` — one local model at a time), write training JSON,
@@ -422,6 +425,24 @@ macro-F1 0.7789, Brier 0.2839, ECE 0.0807.
   LoRA; on Apple Silicon this comes from unified memory). It never loads,
   unloads, switches, or competes with your loaded LM Studio model.
 
+### Decision backend: Jeff-1 or decider-4b
+
+The sidecar's decision model is selectable at runtime via
+`SYSTEMONE_DECISION_BACKEND` — `jeff1` (default, the rollback target) or
+`decider` ([Mapika/decider-4b](https://huggingface.co/Mapika/decider-4b)
+v2.1, Apache-2.0). The HTTP contracts (`/v1/jeff1/decide`,
+`/v1/systemone/decide`) are identical either way; `/healthz` reports
+which model actually loaded.
+
+- **decider-4b v2.1** beat Jeff-1 on the 111-item JevBench hard set
+  (accuracy 0.64 vs 0.41, ECE 0.22 vs 0.47, median latency 232 ms vs
+  600 ms). It serves merged bf16 weights with `use_graphs=False` and its
+  own per-answer-type temperatures; score answers use its native
+  isolated-levels readout — prediction is argmax over the level
+  probabilities, never the rounded score expectation.
+- **jeff1** stays the default and the rollback: unset the variable (or
+  set it to `jeff1`) and restart the sidecar to roll back.
+
 ## Deployment topologies
 
 SystemOne has two processes: the **shim** (`python -m systemone.shim`,
@@ -435,9 +456,11 @@ result never calls Jeff-1; only `rank-plans` and *uncertain* routes
 consult it. The second opinion is advisory — it never changes the routed
 tier.
 
-Jeff-1 needs ~8–9 GB of device memory (4B bf16 base + LoRA adapter), so it
-runs **once**, on the Mac mini — never on the Windows PC, whose VRAM is
-reserved for the loaded worker model.
+The sidecar runs **once**, on the Windows PC (moved off the Mac mini
+2026-09-25) — Jeff-1 needs ~8–9 GB of device memory (4B bf16 base + LoRA),
+decider-4b ~10 GB (merged bf16). It never evicts the loaded LM Studio
+worker model; if the box cannot hold both, stay on the lighter backend
+(or stop the sidecar) rather than unloading anything.
 
 ### (a) Decentralized (production)
 
@@ -483,6 +506,8 @@ Ctrl-C stops both. The default `SYSTEMONE_JEFF1_URL` (localhost) just works.
 | `SYSTEMONE_JEFF1_BLEND` | `0.5` | Jeff-1 weight in the plan blend: `p = (1−w)·gliclass + w·jeff1` |
 | `JEFF1_ADAPTER_ID` / `JEFF1_BASE_ID` | `GestaltLabs/Jeff-1` / `Qwen/Qwen3-4B-Instruct-2507` | sidecar model ids (env-overridable, never hard-coded) |
 | `JEFF1_DEVICE` | auto (cuda → mps → cpu) | sidecar device override |
+| `SYSTEMONE_DECISION_BACKEND` | `jeff1` | `decider` serves Mapika/decider-4b v2.1 instead of Jeff-1 (restart the sidecar; `jeff1` is the rollback) |
+| `DECIDER_REPO_ID` / `DECIDER_REVISION` | `Mapika/decider-4b` / `eb5fbdfc…` | decider backend model pin (a version pin, env-overridable) |
 
 ## Shipped product integrations
 

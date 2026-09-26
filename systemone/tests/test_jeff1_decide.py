@@ -64,6 +64,11 @@ class _StubEngine:
         self.calls.append(("noul", state, instructions, yes_desc, no_desc))
         return float(self.noul_p)
 
+    def score(self, state, instructions, criteria):
+        self.calls.append(("score", state, instructions, dict(criteria)))
+        label, probs = self.choice_reply
+        return label, dict(probs), max(probs.values())
+
 
 class _FailingEngine(_StubEngine):
     """load() raises -> the handler must answer 503."""
@@ -211,9 +216,9 @@ def test_score_list_criteria(sidecar):
     assert body["level"] == "2"
     assert body["distribution"] == {"0": 0.1, "1": 0.2, "2": 0.7}
     assert body["confidence"] == round(score_confidence([0.1, 0.2, 0.7]), 4)
-    # engine.choice runs over "0".."n-1" level labels
+    # engine.score runs over "0".."n-1" level labels
     kind, _state, _instr, criteria = sidecar.engine.calls[-1]
-    assert kind == "choice"
+    assert kind == "score"
     assert criteria == {"0": "low", "1": "medium", "2": "high"}
 
 
