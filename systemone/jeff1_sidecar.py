@@ -17,6 +17,19 @@ adapter once — lazily, on the first POST — then serves:
         Choice head over the candidate tiers. ADVISORY ONLY — the shim
         never changes the routed tier based on this reply.
 
+    POST /v1/jeff1/decide
+        {"state": <any>, "instructions": "...",
+         "criteria": {"label": "description", ...},
+         "type": "choice" | "noul" | "score"}
+        -> {"type": "choice", "label": "...", "probabilities": {...},
+            "confidence": 0.72, "latency_ms": 12.3}
+        Generic typed decision over the Jeff-1 readout heads. "noul"
+        answers yes/no (criteria optional: {"yes","no"} or [yes, no]);
+        "score" rates ordered levels — criteria is either a list of
+        level descriptions or a dict keyed "0".."n-1".
+        Confidence always uses the TypeSafe-compatible helpers from
+        systemone/api.py (adapted from Mapika/decider, Apache-2.0).
+
     GET /healthz (and GET /)
         -> {"ok": true, "model": "<base>+<adapter>", "device": "mps",
             "loaded": true}
@@ -58,6 +71,12 @@ import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any, Dict, List, Optional, Tuple
+
+# TypeSafe-compatible confidence helpers (choice_confidence,
+# noul_confidence, score_confidence) — confidence semantics adapted from
+# Mapika/decider (Apache-2.0) via this repo's api.py; imported, never
+# reimplemented or hard-coded.
+from .api import choice_confidence, noul_confidence, score_confidence
 
 DEFAULT_ADAPTER_ID = "GestaltLabs/Jeff-1"
 DEFAULT_BASE_ID = "Qwen/Qwen3-4B-Instruct-2507"
@@ -267,7 +286,8 @@ class Jeff1Engine:
         return float(probs["yes"])
 
     def choice(self, state: Any, instructions: str,
-               criteria: Dict[str, str]) -> Tuple[str, Dict[str, float], float]:
+               criteria: Dict[str, Optional[str]]
+               ) -> Tuple[str, Dict[str, float], float]:
         """(choice, probabilities, confidence) over the criteria labels."""
         labels = [(label, criteria.get(label)) for label in criteria]
         return self._judge(state, instructions, labels)
@@ -363,6 +383,154 @@ def _handle_second_opinion(engine: Jeff1Engine,
             "agree": agree, "rationale": rationale}
 
 
+# -- POST /v1/jeff1/decide ----------------------------------------------------
+
+_DECIDE_TYPES = ("choice", "noul", "score")
+
+
+def _decide_instructions(body: Dict[str, Any]) -> str:
+    instructions = body.get("instructions")
+    if not isinstance(instructions, str) or not instructions.strip():
+        raise ValueError(
+            "request must include a non-empty 'instructions' string")
+    return instructions.strip()
+
+
+def _decide_choice_criteria(raw: Any) -> Dict[str, Optional[str]]:
+    if not isinstance(raw, dict) or not raw:
+        raise ValueError(
+            "'criteria' must be a non-empty mapping of label -> description")
+    criteria: Dict[str, Optional[str]] = {}
+    for label, desc in raw.items():
+        if not isinstance(label, str) or not label:
+            raise ValueError("criteria labels must be non-empty strings")
+        if desc is not None and not isinstance(desc, str):
+            raise ValueError(
+                f"description for label '{label}' must be a string or null")
+        criteria[label] = desc
+    return criteria
+
+
+def _decide_score_levels(raw: Any) -> List[Tuple[str, Optional[str]]]:
+    """Score criteria -> [(level_label, description)] in level order.
+
+    Accepts a dict keyed by contiguous level indexes "0".."n-1" or an
+    ordered list of level descriptions.
+    """
+    indexed: Dict[int, Any] = {}
+    if isinstance(raw, list) and raw:
+        indexed = dict(enumerate(raw))
+    elif isinstance(raw, dict) and raw:
+        for key in raw:
+            try:
+                i = int(key)
+            except (TypeError, ValueError):
+                raise ValueError(
+                    "score 'criteria' keys must be level indexes '0'..'n-1'")
+            if i < 0 or i in indexed:
+                raise ValueError(
+                    "score 'criteria' keys must be level indexes '0'..'n-1'")
+            indexed[i] = raw[key]
+    else:
+        raise ValueError(
+            "score 'criteria' must be a non-empty list of level descriptions "
+            "or a mapping '0'..'n-1' -> description")
+    n = len(indexed)
+    if sorted(indexed) != list(range(n)):
+        raise ValueError(
+            "score 'criteria' keys must be contiguous level indexes "
+            "'0'..'n-1'")
+    levels: List[Tuple[str, Optional[str]]] = []
+    for i in range(n):
+        desc = indexed[i]
+        if desc is not None and not isinstance(desc, str):
+            raise ValueError(
+                f"description for level '{i}' must be a string or null")
+        levels.append((str(i), desc))
+    return levels
+
+
+def _decide_noul_descriptions(raw: Any) -> Tuple[Optional[str], Optional[str]]:
+    """Optional noul criteria -> (yes_desc, no_desc)."""
+    if raw is None:
+        return None, None
+    if isinstance(raw, dict):
+        yes_desc, no_desc = raw.get("yes"), raw.get("no")
+    elif isinstance(raw, (list, tuple)) and len(raw) == 2:
+        yes_desc, no_desc = raw[0], raw[1]
+    else:
+        raise ValueError(
+            "'criteria' for noul must be null, a {yes, no} mapping, "
+            "or a 2-item [yes, no] list")
+    for name, desc in (("yes", yes_desc), ("no", no_desc)):
+        if desc is not None and not isinstance(desc, str):
+            raise ValueError(f"'criteria.{name}' must be a string or null")
+    return yes_desc, no_desc
+
+
+def _handle_decide(engine: Jeff1Engine,
+                   body: Dict[str, Any]) -> Dict[str, Any]:
+    """Generic typed decision: {"state", "instructions", "criteria", "type"}.
+
+    choice -> engine.choice over the criteria labels;
+    noul   -> engine.noul, label yes|no;
+    score  -> engine.choice over "0".."n-1" level labels.
+    Confidence always comes from the TypeSafe-compatible helpers in
+    systemone/api.py (confidence semantics adapted from Mapika/decider,
+    Apache-2.0) — never reimplemented here.
+    """
+    if not isinstance(body, dict):
+        raise ValueError("request body must be a JSON object")
+    if "state" not in body:
+        raise ValueError("request must include 'state'")
+    state = body["state"]
+    instructions = _decide_instructions(body)
+    decide_type = body.get("type")
+    if decide_type not in _DECIDE_TYPES:
+        raise ValueError("'type' must be one of 'choice', 'noul', 'score'")
+
+    if decide_type == "choice":
+        criteria = _decide_choice_criteria(body.get("criteria"))
+        ordered = list(criteria.keys())
+        label, probs, _ = engine.choice(state, instructions, criteria)
+        ordered_probs = [float(probs[lab]) for lab in ordered]
+        confidence = choice_confidence(ordered_probs)
+        return {
+            "type": "choice",
+            "label": str(label),
+            "probabilities": {lab: round(float(probs[lab]), 4)
+                              for lab in ordered},
+            "confidence": round(confidence, 4),
+        }
+
+    if decide_type == "noul":
+        yes_desc, no_desc = _decide_noul_descriptions(body.get("criteria"))
+        p_yes = float(engine.noul(state, instructions, yes_desc, no_desc))
+        p_yes = min(1.0, max(0.0, p_yes))
+        confidence = noul_confidence(p_yes)
+        return {
+            "type": "noul",
+            "label": "yes" if p_yes >= 0.5 else "no",
+            "probabilities": {"yes": round(p_yes, 4),
+                              "no": round(1.0 - p_yes, 4)},
+            "confidence": round(confidence, 4),
+        }
+
+    # score: engine.choice over "0".."n-1" level labels.
+    levels = _decide_score_levels(body.get("criteria"))
+    criteria = {lab: desc for lab, desc in levels}
+    label, probs, _ = engine.choice(state, instructions, criteria)
+    ordered = [str(i) for i in range(len(levels))]
+    ordered_probs = [float(probs[lab]) for lab in ordered]
+    confidence = score_confidence(ordered_probs)
+    return {
+        "type": "score",
+        "level": str(label),
+        "distribution": {lab: round(float(probs[lab]), 4) for lab in ordered},
+        "confidence": round(confidence, 4),
+    }
+
+
 class Jeff1Handler(BaseHTTPRequestHandler):
     """HTTP handler; the engine is attached as `server.engine`."""
 
@@ -413,9 +581,12 @@ class Jeff1Handler(BaseHTTPRequestHandler):
                 payload = _handle_rank_plans(engine, body)
             elif self.path == "/v1/jeff1/second-opinion":
                 payload = _handle_second_opinion(engine, body)
+            elif self.path == "/v1/jeff1/decide":
+                payload = _handle_decide(engine, body)
             else:
                 self._send_json(404, {"error": "not found, POST "
-                    "/v1/jeff1/rank-plans or /v1/jeff1/second-opinion"})
+                    "/v1/jeff1/rank-plans, /v1/jeff1/second-opinion "
+                    "or /v1/jeff1/decide"})
                 return
             payload["latency_ms"] = round(
                 (time.perf_counter() - t0) * 1000.0, 1)
