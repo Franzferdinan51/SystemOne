@@ -29,8 +29,32 @@ import json
 import os
 import sys
 
-from .api import MAX_STATE_CHARS, MODEL_CANDIDATES, SystemOne, SystemOneError, default_device
+try:
+    from .api import (
+        MAX_STATE_CHARS,
+        MODEL_CANDIDATES,
+        SystemOne,
+        SystemOneError,
+        default_device,
+    )
+except ImportError:  # slim install: shim-client + direct-SGLang commands only
+    MAX_STATE_CHARS = 6000
+    MODEL_CANDIDATES = ["knowledgator/gliclass-edge-v3.0"]
+    SystemOne = None  # type: ignore[assignment,misc]
+
+    class SystemOneError(RuntimeError):  # type: ignore[no-redef]
+        """Fallback when the local-engine deps are absent."""
+
+        def __init__(self, message: str, *, hint: str = "") -> None:
+            self.hint = hint
+            super().__init__(f"{message} {hint}".strip() if hint else message)
+
+    def default_device() -> str:
+        return "cpu"
+
 from .client import ShimError, SystemOneClient, default_shim_url
+
+_LOCAL_EXTRA_HINT = "pip install 'systemone[local]' for the torch/GLiClass engine"
 
 
 def _env_model() -> str:
@@ -114,16 +138,85 @@ def _fmt_prob_table(dist: dict) -> list:
     return lines
 
 
+def _decide_direct_sglang(args: argparse.Namespace) -> dict:
+    """One typed decision straight from SGLang, no shim involved.
+
+    Builds the api-style question from the decide flags, judges it with
+    SGLangBackend (SGLANG_BASE_URL / SGLANG_MODEL), and maps the answer
+    onto the decide payload shape the printer below expects.
+    """
+    from .sglang_backend import SGLangBackend, SGLangError
+
+    criteria = _parse_criteria(args)
+    if args.type == "choice":
+        labels = list(criteria) if isinstance(criteria, dict) else []
+        if len(labels) < 2:
+            raise SystemExit(
+                "error: --direct-sglang choice needs >= 2 --criteria labels"
+            )
+        question = {
+            "name": "decision", "type": "choice", "options": labels,
+            "prompt": args.instructions,
+        }
+    elif args.type == "score":
+        levels = list(criteria) if isinstance(criteria, list) else []
+        if len(levels) < 2:
+            raise SystemExit(
+                "error: --direct-sglang score needs >= 2 --criteria levels"
+            )
+        question = {
+            "name": "decision", "type": "score", "levels": levels,
+            "prompt": args.instructions,
+        }
+    else:
+        question = {
+            "name": "decision", "type": "noul",
+            "statement": args.instructions,
+        }
+    try:
+        out = SGLangBackend().systemone(args.state, [question])
+    except SGLangError as exc:
+        raise SystemExit(f"error: {exc}")
+    ans, meta = out["decision"], out.get("_meta", {})
+    decision: dict = {
+        "type": args.type,
+        "backend": "sglang-direct",
+        "model": meta.get("model"),
+        "latency_ms": meta.get("latency_ms"),
+        "confidence": ans.get("confidence"),
+        "label_mass": ans.get("label_mass"),
+    }
+    if args.type == "choice":
+        decision.update({
+            "label": ans["choice"], "probabilities": ans["probabilities"],
+        })
+    elif args.type == "score":
+        decision.update({
+            "level": ans["level"], "distribution": ans["distribution"],
+            "score": ans.get("score"),
+        })
+    else:
+        p = float(ans["probability"])
+        decision.update({
+            "label": "yes" if ans["answer"] else "no", "noul": p,
+            "probabilities": {"yes": p, "no": 1.0 - p},
+        })
+    return decision
+
+
 def cmd_decide(args: argparse.Namespace) -> int:
     """One typed decision via the live shim's decide endpoint."""
-    criteria = _parse_criteria(args)
-    try:
-        decision = _make_client(args).decide(
-            args.state, args.instructions, criteria=criteria, type=args.type
-        )
-    except ShimError as exc:
-        print(f"error: {exc}", file=sys.stderr)
-        return 1
+    if getattr(args, "direct_sglang", False):
+        decision = _decide_direct_sglang(args)
+    else:
+        criteria = _parse_criteria(args)
+        try:
+            decision = _make_client(args).decide(
+                args.state, args.instructions, criteria=criteria, type=args.type
+            )
+        except ShimError as exc:
+            print(f"error: {exc}", file=sys.stderr)
+            return 1
     if args.json:
         _print_json(decision)
         return 0
@@ -164,7 +257,10 @@ def cmd_status(args: argparse.Namespace) -> int:
     shim = info.get("shim") or {}
     print(f"shim       : {info.get('shim_url', '?')}")
     if shim.get("ok"):
-        print(f"  ok       : yes  (engine model: {shim.get('model', 'n/a')})")
+        backend = shim.get("backend")
+        backend_s = f", backend: {backend}" if backend else ""
+        print(f"  ok       : yes  (engine model: {shim.get('model', 'n/a')}"
+              f"{backend_s})")
     else:
         print(f"  ok       : NO — {shim.get('error', 'unknown error')}")
         return 1
@@ -201,7 +297,13 @@ def cmd_local(args: argparse.Namespace) -> int:
 
     Only loads a model with --load (one at a time).
     """
-    import torch
+    try:
+        import torch
+    except ImportError:
+        print("systemone local")
+        print(f"  device setting   : {_env_device()} (torch not installed)")
+        print(f"  problem          : {_LOCAL_EXTRA_HINT}")
+        return 1
 
     print("systemone local")
     print(f"  configured model : {_env_model()}")
@@ -228,6 +330,9 @@ def cmd_local(args: argparse.Namespace) -> int:
         print(f"  mcp lib          : PROBLEM ({exc})")
 
     if args.load:
+        if SystemOne is None:
+            print(f"  model load       : FAILED — {_LOCAL_EXTRA_HINT}")
+            return 1
         try:
             eng = SystemOne()
         except SystemOneError as exc:
@@ -265,7 +370,12 @@ def cmd_ask(args: argparse.Namespace) -> int:
 
     # Reuse the MCP server's Jev-compatible validation/conversion so the CLI
     # and the tool accept exactly the same question shape.
-    from .mcp_server import _convert_questions, _to_jev_answers, get_engine
+    try:
+        from .mcp_server import _convert_questions, _to_jev_answers, get_engine
+    except ImportError as exc:
+        print(f"error: ask cannot start ({exc}) — {_LOCAL_EXTRA_HINT} "
+              f"(plus 'systemone[mcp]' for MCP support)", file=sys.stderr)
+        return 1
 
     try:
         converted, level_orders = _convert_questions(questions)
@@ -308,9 +418,10 @@ def cmd_serve(args: argparse.Namespace) -> int:
                   f"(pid {proc.pid}; model loads lazily on first request)")
         from .shim import serve as shim_serve
 
-        server = shim_serve(args.port)
+        server = shim_serve(args.port, engine_name=getattr(args, "engine", None))
         print(f"systemone shim on http://127.0.0.1:{args.port}/v1/systemone "
-              f"and /v1/systemone/route (model {server.engine.model_name})")
+              f"and /v1/systemone/route (model {server.engine.model_name}, "
+              f"backend {server.engine_backend})")
         server.serve_forever()
     except KeyboardInterrupt:
         print("\nshutting down")
@@ -374,6 +485,9 @@ def build_parser() -> argparse.ArgumentParser:
               'score: ["level 1", "level 2"], noul: {"true": "..", "false": ".."})')
     p_decide.add_argument("--json", action="store_true",
                           help="emit the raw decide payload as JSON")
+    p_decide.add_argument(
+        "--direct-sglang", action="store_true",
+        help="judge with SGLang directly (SGLANG_BASE_URL), no shim involved")
     p_decide.set_defaults(func=cmd_decide)
 
     p_status = sub.add_parser(
@@ -413,6 +527,9 @@ def build_parser() -> argparse.ArgumentParser:
                          help="also start the decision sidecar as a subprocess")
     p_serve.add_argument("--jeff1-port", type=int, default=8079,
                          help="decision sidecar port (default 8079)")
+    p_serve.add_argument(
+        "--engine", default=None, choices=("auto", "local", "sglang"),
+        help="decision engine to serve (default: $SYSTEMONE_ENGINE or auto)")
     p_serve.set_defaults(func=cmd_serve)
 
     return parser

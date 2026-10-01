@@ -154,6 +154,8 @@ class SGLangBackend:
     every answer and ``backend: "sglang"`` in ``_meta``).
     """
 
+    backend_name = "sglang"
+
     def __init__(
         self,
         base_url: str | None = None,
@@ -472,6 +474,104 @@ class SGLangBackend:
             "operation_probabilities": op_answer["probabilities"],
             "_meta": answers["_meta"],
         }
+
+
+class HybridBackend:
+    """Local-first engine with SGLang escalation on low confidence.
+
+    Every call is first judged by `local_engine` (any object with
+    ``systemone(state, questions)`` — usually api.SystemOne). When every
+    answer's confidence meets `escalate_below`, the local answers are
+    returned as-is. When any answer falls below it, the whole call is
+    re-judged by `sglang` (a SGLangBackend) and the SGLang answers win.
+
+    Escalation is whole-call, not per-question: mixing two judges'
+    calibrations inside one answer set would silently rot the confidence
+    semantics. ``_meta`` records which judge answered
+    (``backend: "hybrid/local" | "hybrid/sglang"``) plus the minimum local
+    confidence observed, so callers can audit the escalation rate.
+
+    Either side may be omitted: local=None degrades to pure SGLang,
+    sglang=None degrades to pure local. SGLang failures while escalating
+    fail open to the local answers with ``escalation_error`` in ``_meta``
+    instead of raising — the local judge already answered, so dropping its
+    answers for a transport error would be strictly worse.
+
+    Stdlib-only and duck-typed: this class never imports torch/gliclass,
+    so it can be constructed (with sglang-only) on a slim install.
+    """
+
+    backend_name = "hybrid"
+
+    def __init__(
+        self,
+        local_engine: Any | None = None,
+        sglang: "SGLangBackend | None" = None,
+        escalate_below: float = 0.6,
+    ) -> None:
+        self.local = local_engine
+        self.sglang = sglang
+        self.escalate_below = float(escalate_below)
+        local_name = getattr(local_engine, "model_name", None) or "none"
+        sglang_name = getattr(sglang, "model_name", None) or "none"
+        self.model_name = f"hybrid(local={local_name},sglang={sglang_name})"
+
+    @staticmethod
+    def _min_confidence(answers: Dict[str, Any]) -> float:
+        confs = [
+            ans.get("confidence", 0.0)
+            for key, ans in answers.items()
+            if key != "_meta" and isinstance(ans, dict)
+        ]
+        vals = [float(c) for c in confs if isinstance(c, (int, float))]
+        return min(vals) if vals else 0.0
+
+    def systemone(
+        self,
+        state: str,
+        questions: Sequence[Dict[str, Any]],
+        images: Sequence[str] | None = None,
+    ) -> Dict[str, Any]:
+        if self.local is None:
+            if self.sglang is None:
+                raise SGLangError(
+                    "HybridBackend has neither a local engine nor an "
+                    "SGLang backend configured"
+                )
+            answers = self.sglang.systemone(state, questions, images=images)
+            meta = dict(answers.get("_meta", {}))
+            meta["backend"] = "hybrid/sglang"
+            meta["escalated"] = True
+            meta["escalation_reason"] = "no local engine configured"
+            answers["_meta"] = meta
+            return answers
+
+        local_answers = self.local.systemone(state, questions)
+        floor = self._min_confidence(local_answers)
+        if floor >= self.escalate_below or self.sglang is None:
+            meta = dict(local_answers.get("_meta", {}))
+            meta["backend"] = "hybrid/local"
+            meta["escalated"] = False
+            meta["min_local_confidence"] = round(floor, 4)
+            local_answers["_meta"] = meta
+            return local_answers
+
+        try:
+            answers = self.sglang.systemone(state, questions, images=images)
+        except SGLangError as exc:
+            meta = dict(local_answers.get("_meta", {}))
+            meta["backend"] = "hybrid/local"
+            meta["escalated"] = False
+            meta["min_local_confidence"] = round(floor, 4)
+            meta["escalation_error"] = str(exc)[:200]
+            local_answers["_meta"] = meta
+            return local_answers
+        meta = dict(answers.get("_meta", {}))
+        meta["backend"] = "hybrid/sglang"
+        meta["escalated"] = True
+        meta["min_local_confidence"] = round(floor, 4)
+        answers["_meta"] = meta
+        return answers
 
 
 def decide_fn_for(engine: Any):

@@ -149,6 +149,40 @@ class SystemOneClient:
             "POST", "/v1/systemone/rank-plans", {"task": task, "plans": plans}
         )
 
+    def decisions(
+        self,
+        input: Any,
+        questions: List[Dict[str, Any]],
+        model: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """POST /v1/decisions — batched typed questions, SGLang dialect.
+
+        questions: [{"id": str, "type": "choice"|"score"|"yes_no",
+        "question": str, "options"/"levels": [{"name": str}, ...]}].
+        input: state text (or OpenAI-style content parts; image parts are
+        noted-and-skipped by the local engine). Returns {"answers": {...}}.
+        """
+        body: Dict[str, Any] = {"input": input, "questions": questions}
+        if model:
+            body["model"] = model
+        return self._request("POST", "/v1/decisions", body)
+
+    def systemone(
+        self,
+        state: Any,
+        questions: Any,
+        model: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """POST /v1/systemone — batched typed questions, TypeSafe dialect.
+
+        questions: {id: {"type", "instructions", "criteria"}} (also accepts
+        a list of question mappings carrying "id"). Returns {"answers": ...}.
+        """
+        body: Dict[str, Any] = {"state": state, "questions": questions}
+        if model:
+            body["model"] = model
+        return self._request("POST", "/v1/systemone", body)
+
     def status(self, probe: bool = True) -> Dict[str, Any]:
         """Composite health: shim liveness plus the decision backend in use.
 

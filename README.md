@@ -42,6 +42,13 @@ into shipping products:
   through the :8079 decision sidecar with a fail-open local GLiClass
   fallback. See [Typed decision
   endpoint](#typed-decision-endpoint-post-v1systemonedecide).
+- **SGLang baked in as a first-class engine** — the shim serves
+  `SYSTEMONE_ENGINE=auto|local|sglang` (SGLang when `SGLANG_BASE_URL` is
+  set and healthy, else local, always fail-open), the base install is
+  slim (numpy-only; torch/GLiClass moved to `pip install
+  'systemone[local]'`), and `HybridBackend` escalates low-confidence
+  local calls to a 27B-class SGLang judge. See [SGLang
+  interop](#sglang-interop).
 
 ## Map to Jev's primitives
 
@@ -111,7 +118,9 @@ never loads a model in-process. The shim URL resolves in this order:
 ### Install
 
 ```bash
-pip install -e .          # or: pip install systemone
+pip install -e .                     # slim: SGLang backend + shim client (numpy-only)
+pip install -e '.[local]'            # + torch/GLiClass local engine
+pip install -e '.[local,mcp,dev]'    # everything incl. MCP tools + pytest
 systemone --help          # route / decide / status / battery (+ legacy local/ask/serve)
 systemone-acp --help      # ACP agent (stdio)
 ```
@@ -301,8 +310,41 @@ the probe.
 
 ## SGLang interop
 
-SystemOne speaks both sides of SGLang's decision API — no new dependencies,
-nothing in the existing behavior changes.
+SystemOne speaks both sides of SGLang's decision API, and SGLang is now a
+baked-in engine choice — not a sidecar integration.
+
+**Pick the judge: `SYSTEMONE_ENGINE=auto|local|sglang`.** The shim
+(`python3 -m systemone.shim`, `systemone serve`) serves whichever engine
+you select (`--engine` flag overrides the env var):
+
+| setting | behavior |
+|---|---|
+| `auto` (default) | SGLang when `SGLANG_BASE_URL` is set and the server answers a health probe, else the local GLiClass engine. No probe runs unless `SGLANG_BASE_URL` is explicit, so a default box never stalls at startup. |
+| `local` | Always the GLiClass engine. Needs `pip install 'systemone[local]'`. |
+| `sglang` | Always SGLang. Unreachable → fails open to local when available, else a clear error. |
+
+`GET /healthz` reports the live choice (`{"ok": true, "model": ...,
+"backend": "sglang"|"hybrid"|"local"|"custom"}`), and `systemone status`
+prints it. Every failure path stays fail-open, per the house rule.
+
+**Slim install, heavy engine optional.** The base package is numpy-only:
+`SGLangBackend`, the shim's SGLang mode, the CLI's shim commands, and
+`decide --direct-sglang` (judge straight from `SGLANG_BASE_URL` with no
+shim at all) all work with no torch. The GLiClass engine moved to the
+`local` extra — `pip install 'systemone[local]'` — and anything needing
+it says so explicitly instead of trace-backing on `import torch`.
+
+**Hybrid: cheap local calls, 27B escalation.** `HybridBackend` judges
+every call locally first and re-judges the whole call with SGLang when
+any answer's confidence falls below `escalate_below` (default 0.6).
+Escalation is whole-call (never a per-question mix — that would rot the
+confidence semantics), SGLang failures fail open to the local answers,
+and `_meta` records `hybrid/local` vs `hybrid/sglang` plus the minimum
+local confidence so you can audit the escalation rate:
+
+    from systemone import HybridBackend, SGLangBackend
+    from systemone.api import SystemOne  # needs systemone[local]
+    eng = HybridBackend(SystemOne(), SGLangBackend(), escalate_below=0.6)
 
 **Serve SGLang's dialect locally.** The shim answers
 `POST /v1/decisions` with SGLang's request/response shape (choices as

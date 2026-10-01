@@ -107,7 +107,43 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from logging.handlers import RotatingFileHandler
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
-from .api import MAX_STATE_CHARS, SystemOne, validate_choice
+try:
+    from .api import MAX_STATE_CHARS, SystemOne, validate_choice
+except ImportError:  # slim install (no torch/gliclass): SGLang-engine or
+    # injected-engine mode only. Local-engine construction raises a helpful
+    # error; the translation helpers below keep working.
+    MAX_STATE_CHARS = 6000
+    SystemOne = None  # type: ignore[assignment,misc]
+
+    def validate_choice(answer, ids, tol=0.02):  # type: ignore[misc]
+        """Fallback choice contract check (same shape as api.validate_choice).
+
+        Only used when the local-engine deps are absent; raises ValueError
+        (mapped to HTTP 400 by do_POST) instead of api.SystemOneError.
+        """
+        try:
+            probs = answer["probabilities"]
+            choice = answer["choice"]
+            numbers = list(probs.values())
+            valid = (
+                choice in ids
+                and set(probs) == set(ids)
+                and all(
+                    isinstance(n, (int, float)) and 0 <= n <= 1 for n in numbers
+                )
+                and abs(sum(numbers) - 1.0) < tol
+                and probs[choice] >= max(numbers) - 1e-6
+            )
+        except (KeyError, TypeError, ValueError):
+            valid = False
+        if not valid:
+            raise ValueError(
+                "model returned an invalid decision distribution"
+            )
+        return answer
+
+
+from .sglang_backend import HybridBackend, SGLangBackend
 from .scoring import (
     apply_calibration,
     apply_inventory,
@@ -1624,7 +1660,11 @@ class ShimHandler(BaseHTTPRequestHandler):
 
     def do_GET(self) -> None:  # noqa: N802
         if self.path in ("/", "/healthz"):
-            self._send_json(200, {"ok": True, "model": self.server.engine.model_name})
+            self._send_json(200, {
+                "ok": True,
+                "model": self.server.engine.model_name,
+                "backend": getattr(self.server, "engine_backend", "custom"),
+            })
         else:
             self._send_json(404, {"error": "not found"})
 
@@ -1739,10 +1779,108 @@ def _win32_detach(argv: list[str]) -> bool:
         return False
 
 
+# -- baked-in engine selection (local GLiClass vs SGLang) --------------------
+
+ENGINE_ENV = "SYSTEMONE_ENGINE"
+ENGINE_CHOICES = ("auto", "local", "sglang")
+
+
+def engine_backend_name(engine: Any) -> str:
+    """Short backend label for an engine instance: sglang | hybrid | local.
+
+    Anything else (injected stubs, test doubles) reports "custom". Used in
+    the /healthz payload and the serve banner so operators can see which
+    judge is actually answering.
+    """
+    if isinstance(engine, HybridBackend):
+        return "hybrid"
+    if isinstance(engine, SGLangBackend):
+        return "sglang"
+    if SystemOne is not None and isinstance(engine, SystemOne):
+        return "local"
+    if type(engine).__name__ == "SystemOne":
+        return "local"
+    return "custom"
+
+
+def create_engine(name: str | None = None) -> Any:
+    """Build the decision engine the shim serves.
+
+    Args:
+        name: "auto" (default) | "local" | "sglang". Unset -> the
+            SYSTEMONE_ENGINE env var, defaulting to "auto".
+
+    - auto: SGLang when SGLANG_BASE_URL is set and the server answers a
+      health probe, else the local GLiClass engine. The probe only runs
+      when SGLANG_BASE_URL is explicit, so a default box never stalls at
+      startup waiting on a server that was never configured.
+    - local: the GLiClass engine. Needs torch/transformers/gliclass
+      (pip install 'systemone[local]').
+    - sglang: SGLangBackend. When the server is unreachable it fails open
+      to the local engine if one can be built, else raises SGLangError.
+
+    Raises:
+        ValueError: unknown engine name.
+        SGLangError: sglang requested but unreachable and no local fallback.
+        ImportError: local requested but the heavy deps are not installed.
+    """
+    from .sglang_backend import SGLangError
+
+    sel = (name or os.environ.get(ENGINE_ENV) or "auto").strip().lower()
+    if sel not in ENGINE_CHOICES:
+        raise ValueError(
+            f"unknown engine {sel!r} (SYSTEMONE_ENGINE must be one of: "
+            f"{', '.join(ENGINE_CHOICES)})"
+        )
+
+    def _local() -> Any:
+        if SystemOne is None:
+            raise ImportError(
+                "the local GLiClass engine needs torch + transformers + "
+                "gliclass, which are not installed. Either install them "
+                "(pip install 'systemone[local]') or serve SGLang instead "
+                "(SYSTEMONE_ENGINE=sglang with SGLANG_BASE_URL set)."
+            )
+        return SystemOne(model_name=os.environ.get("SYSTEMONE_MODEL"))
+
+    if sel == "local":
+        return _local()
+    sglang_configured = bool((os.environ.get("SGLANG_BASE_URL") or "").strip())
+    if sel == "sglang" or sglang_configured:
+        backend = SGLangBackend()
+        try:
+            healthy = backend.health()
+        except Exception:
+            healthy = False
+        if healthy:
+            return backend
+        if sel == "sglang":
+            if SystemOne is not None:
+                logging.warning(
+                    "SGLang server unreachable at %s; failing open to the "
+                    "local engine",
+                    backend.base_url,
+                )
+                return _local()
+            raise SGLangError(
+                "could not reach the SGLang server and no local engine "
+                "is available",
+                hint=f"tried {backend.base_url} (set SGLANG_BASE_URL); "
+                "slim install has no local fallback — pip install "
+                "'systemone[local]' to add one",
+            )
+        logging.warning(
+            "SGLang server unreachable at %s; failing open to the local engine",
+            backend.base_url,
+        )
+    return _local()
+
+
 def serve(
     port: int = 8765,
-    engine: SystemOne | None = None,
+    engine: Any = None,
     registry: Dict[str, Dict[str, Any]] | None = None,
+    engine_name: str | None = None,
 ) -> ThreadingHTTPServer:
     """Build (but do not block on) the shim server.
 
@@ -1754,10 +1892,17 @@ def serve(
     semantics). Starts a daemon thread refreshing model availability from
     the LM Studio inventory (fail-open; registry values stand when LM
     Studio is unreachable).
+
+    Args:
+        engine: explicit engine instance (wins over engine_name; tests use
+            this to inject stubs).
+        engine_name: "auto" | "local" | "sglang" (see create_engine);
+            unset -> $SYSTEMONE_ENGINE, default "auto".
     """
-    engine = engine or SystemOne(model_name=os.environ.get("SYSTEMONE_MODEL"))
+    engine = engine or create_engine(engine_name)
     server = ThreadingHTTPServer(("127.0.0.1", port), ShimHandler)
     server.engine = engine  # type: ignore[attr-defined]
+    server.engine_backend = engine_backend_name(engine)  # type: ignore[attr-defined]
     reg = registry if registry is not None else load_registry()
     server.registry = reg  # type: ignore[attr-defined]
     server.calibration = load_calibration(CALIBRATION_PATH)  # type: ignore[attr-defined]
@@ -1795,6 +1940,17 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="Local /v1/systemone shim server")
     parser.add_argument("--port", type=int, default=8765)
     parser.add_argument(
+        "--engine",
+        choices=list(ENGINE_CHOICES),
+        default=None,
+        help=(
+            "decision engine to serve: auto (SGLang when SGLANG_BASE_URL "
+            "is set and healthy, else local), local (GLiClass), or sglang "
+            "(fail-open to local when unreachable). Default: "
+            "$SYSTEMONE_ENGINE or auto."
+        ),
+    )
+    parser.add_argument(
         "--daemonize",
         action="store_true",
         default=os.environ.get("SYSTEMONE_DAEMONIZE", "").strip() == "1",
@@ -1814,10 +1970,11 @@ def main() -> None:
     if args.daemonize and _win32_detach(sys.argv[1:]):
         print("systemone shim detached; parent exiting")
         return
-    server = serve(args.port)
+    server = serve(args.port, engine_name=args.engine)
     print(
         f"systemone shim on http://127.0.0.1:{args.port}/v1/systemone "
-        f"and /v1/systemone/route (model {server.engine.model_name})"
+        f"and /v1/systemone/route (model {server.engine.model_name}, "
+        f"backend {server.engine_backend})"
     )
     server.serve_forever()
 
