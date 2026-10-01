@@ -23,7 +23,7 @@ from __future__ import annotations
 
 import json
 import os
-from typing Dict, List, Sequence
+from typing import Dict, List, Sequence
 
 from .distill import to_gliclass_json, train_student
 

@@ -4,6 +4,7 @@ Run fast tests only:  pytest systemone/tests -m "not slow"
 Run all (downloads/loads gliclass-edge once):  pytest systemone/tests
 """
 
+import importlib.util
 import os
 import sys
 
@@ -11,6 +12,10 @@ import numpy as np
 import pytest
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+
+needs_torch = pytest.mark.skipif(
+    importlib.util.find_spec("torch") is None, reason="needs systemone[local]"
+)
 
 from systemone.calibration import (
     IsotonicCalibrator,
@@ -75,6 +80,7 @@ def test_isotonic_binary_monotone():
 
 
 @pytest.mark.slow
+@needs_torch
 def test_systemone_end_to_end():
     from systemone import SystemOne, make_questions
 
@@ -108,6 +114,7 @@ def test_systemone_error_is_sanitized_and_hinted():
     assert err.hint.startswith("last error:")
 
 
+@needs_torch
 def test_sanitize_detail_is_single_line_and_bounded():
     from systemone.api import _sanitize_detail
 
@@ -124,6 +131,7 @@ def test_max_state_chars_bound():
     assert MAX_STATE_CHARS == 6000  # same bound Loki uses for the routing task
 
 
+@needs_torch
 def test_mcp_confidence_fallback():
     from systemone.mcp_server import _confidence
 

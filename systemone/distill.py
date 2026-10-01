@@ -29,7 +29,7 @@ import os
 import subprocess
 import sys
 import urllib.request
-from typing Callable, Dict, List, Sequence, Tuple
+from typing import Callable, Dict, List, Sequence, Tuple
 
 LabelFn = Callable[[str], str]
 

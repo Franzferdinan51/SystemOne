@@ -3,8 +3,8 @@
 Covers:
 - calibration.PerTypeTemperatureCalibrator (per-answer-type temperature map,
   <50-rows pooled fallback, JSON round-trip, fail-open from_dict)
-- api choice/score/noul TypeSafe confidence definitions
-- api.build_decision_prompts (state-first rows, option shuffling, abstain pin)
+- patterns choice/score/noul TypeSafe confidence definitions (api re-exports)
+- patterns.build_decision_prompts (state-first rows, option shuffling, abstain pin)
 - metrics (ece/brier/nll/aurc/selective-accuracy/summarize/format_table)
 - scoring.temperature_for + apply_calibration(qtype=...)
 - battery.run.per_tier_stats + battery.fit_types merge behavior
@@ -21,8 +21,8 @@ import pytest
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
 
-from systemone import api
-from systemone.api import (
+from systemone import patterns as api  # canonical light source; api re-exports
+from systemone.patterns import (
     build_decision_prompts,
     choice_confidence,
     noul_confidence,

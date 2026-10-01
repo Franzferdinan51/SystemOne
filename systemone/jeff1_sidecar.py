@@ -84,9 +84,9 @@ from typing import Any, Dict, List, Optional, Tuple
 
 # TypeSafe-compatible confidence helpers (choice_confidence,
 # noul_confidence, score_confidence) — confidence semantics adapted from
-# Mapika/decider (Apache-2.0) via this repo's api.py; imported, never
+# Mapika/decider (Apache-2.0) via this repo's patterns.py; imported, never
 # reimplemented or hard-coded.
-from .api import choice_confidence, noul_confidence, score_confidence
+from .patterns import choice_confidence, noul_confidence, score_confidence
 
 # Decider backend pin: Mapika/decider-4b v2.1 (Apache-2.0), merged bf16
 # weights. The revision is resolved to a local HF snapshot dir before

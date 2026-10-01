@@ -107,40 +107,14 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from logging.handlers import RotatingFileHandler
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
+from .patterns import MAX_STATE_CHARS, validate_choice
+
 try:
-    from .api import MAX_STATE_CHARS, SystemOne, validate_choice
+    from .api import SystemOne
 except ImportError:  # slim install (no torch/gliclass): SGLang-engine or
-    # injected-engine mode only. Local-engine construction raises a helpful
-    # error; the translation helpers below keep working.
-    MAX_STATE_CHARS = 6000
+    # injected-engine mode only; create_engine raises a helpful error for
+    # local-engine construction.
     SystemOne = None  # type: ignore[assignment,misc]
-
-    def validate_choice(answer, ids, tol=0.02):  # type: ignore[misc]
-        """Fallback choice contract check (same shape as api.validate_choice).
-
-        Only used when the local-engine deps are absent; raises ValueError
-        (mapped to HTTP 400 by do_POST) instead of api.SystemOneError.
-        """
-        try:
-            probs = answer["probabilities"]
-            choice = answer["choice"]
-            numbers = list(probs.values())
-            valid = (
-                choice in ids
-                and set(probs) == set(ids)
-                and all(
-                    isinstance(n, (int, float)) and 0 <= n <= 1 for n in numbers
-                )
-                and abs(sum(numbers) - 1.0) < tol
-                and probs[choice] >= max(numbers) - 1e-6
-            )
-        except (KeyError, TypeError, ValueError):
-            valid = False
-        if not valid:
-            raise ValueError(
-                "model returned an invalid decision distribution"
-            )
-        return answer
 
 
 from .sglang_backend import HybridBackend, SGLangBackend

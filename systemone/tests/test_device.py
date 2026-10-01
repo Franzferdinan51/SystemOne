@@ -7,7 +7,7 @@ import pytest
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
 
-import torch
+torch = pytest.importorskip("torch", reason="needs systemone[local]")
 
 import systemone.api as api
 from systemone.api import SystemOne, default_device

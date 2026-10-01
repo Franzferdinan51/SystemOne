@@ -15,12 +15,21 @@ import pytest
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
 
 from systemone import cli
-from systemone import mcp_server
 from systemone.client import (
     ShimError,
     SystemOneClient,
     default_shim_url,
 )
+
+
+def _mcp():
+    """systemone.mcp_server, skipping tests when its heavy deps are absent."""
+    try:
+        import systemone.mcp_server as mod
+
+        return mod
+    except ImportError:
+        pytest.skip("needs systemone[mcp,local]")
 
 
 BASE = "http://shim.test"
@@ -328,24 +337,24 @@ def test_cli_battery_passthrough(monkeypatch):
 
 @pytest.fixture
 def fake_mcp_client(monkeypatch):
-    monkeypatch.setattr(mcp_server, "get_client", lambda: _FakeClient())
+    monkeypatch.setattr(_mcp(), "get_client", lambda: _FakeClient())
     return _FakeClient
 
 
 def test_mcp_route_tool(fake_mcp_client):
-    out = mcp_server._route_impl("do things", cost_bias="economy")
+    out = _mcp()._route_impl("do things", cost_bias="economy")
     assert out["tier"] == "balanced"
     assert out["confidence"] == 0.7234
 
 
 def test_mcp_decide_tool(fake_mcp_client):
-    out = mcp_server._decide_impl("s", "pick", criteria={"a": None, "b": None})
+    out = _mcp()._decide_impl("s", "pick", criteria={"a": None, "b": None})
     assert out["label"] == "a"
     assert out["backend"] == "jeff1"
 
 
 def test_mcp_status_tool(fake_mcp_client):
-    out = mcp_server._status_impl()
+    out = _mcp()._status_impl()
     assert out["shim"]["ok"] is True
     assert out["decision"]["backend"] == "jeff1"
 
@@ -357,8 +366,8 @@ def test_mcp_rank_plans_tool(monkeypatch):
                     "ranking": [{"id": "p1", "score": 0.9}],
                     "model": "fake-engine", "usage": {}}
 
-    monkeypatch.setattr(mcp_server, "get_client", lambda: _RankFake())
-    out = mcp_server._rank_plans_impl("t", [{"id": "p1", "text": "plan"}])
+    monkeypatch.setattr(_mcp(), "get_client", lambda: _RankFake())
+    out = _mcp()._rank_plans_impl("t", [{"id": "p1", "text": "plan"}])
     assert out["ranking"][0]["id"] == "p1"
 
 
@@ -367,6 +376,6 @@ def test_mcp_tool_error_shape(monkeypatch):
         def route(self, *a, **k):
             raise ShimError("boom")
 
-    monkeypatch.setattr(mcp_server, "get_client", lambda: _ErrClient())
-    out = mcp_server._route_impl("t")
+    monkeypatch.setattr(_mcp(), "get_client", lambda: _ErrClient())
+    out = _mcp()._route_impl("t")
     assert out == {"error": "boom"}

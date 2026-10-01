@@ -40,7 +40,9 @@ import sys
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
 
-from systemone import SystemOne
+# NOTE: SystemOne is imported inside main() so the pure helpers in this
+# module (_clamp_threshold, CANDIDATE_DESCRIPTIONS, sticky cache) stay
+# importable on a slim install (test_smoke.py relies on this).
 
 # -- the local "gateway catalog": model -> structured capability string -----
 # Mirrors Loki's JevAutoCandidate.description(): capability tokens, context,
@@ -198,6 +200,8 @@ def route_first_task(
 
 def main() -> None:
     global _ROUTE_ATTEMPTED
+    from systemone import SystemOne  # local engine; needs systemone[local]
+
     parser = argparse.ArgumentParser(description="Local Loki-Autorouter-style model routing")
     parser.add_argument("task", nargs="?", default="triage this support ticket: my invoice is wrong",
                         help="the session's first task to route")

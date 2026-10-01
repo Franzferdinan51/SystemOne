@@ -29,25 +29,13 @@ import json
 import os
 import sys
 
+from .patterns import MAX_STATE_CHARS, SystemOneError
+
 try:
-    from .api import (
-        MAX_STATE_CHARS,
-        MODEL_CANDIDATES,
-        SystemOne,
-        SystemOneError,
-        default_device,
-    )
+    from .api import MODEL_CANDIDATES, SystemOne, default_device
 except ImportError:  # slim install: shim-client + direct-SGLang commands only
-    MAX_STATE_CHARS = 6000
     MODEL_CANDIDATES = ["knowledgator/gliclass-edge-v3.0"]
     SystemOne = None  # type: ignore[assignment,misc]
-
-    class SystemOneError(RuntimeError):  # type: ignore[no-redef]
-        """Fallback when the local-engine deps are absent."""
-
-        def __init__(self, message: str, *, hint: str = "") -> None:
-            self.hint = hint
-            super().__init__(f"{message} {hint}".strip() if hint else message)
 
     def default_device() -> str:
         return "cpu"

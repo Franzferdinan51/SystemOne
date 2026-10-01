@@ -110,19 +110,29 @@ def test_unknown_lazy_name_raises_attribute_error():
         raise AssertionError("expected AttributeError")
 
 
-# -- slim/heavy constant parity -------------------------------------------
+# -- patterns canonical-source parity ---------------------------------------
 
 
-def test_shim_state_bound_pinned():
-    assert shim_module.MAX_STATE_CHARS == 6000
+def test_patterns_are_canonical_light_source():
+    import systemone.patterns as patterns
+
+    assert shim_module.MAX_STATE_CHARS is patterns.MAX_STATE_CHARS == 6000
+    assert shim_module.validate_choice is patterns.validate_choice
+    assert systemone.SystemOneError is patterns.SystemOneError
+    assert systemone.make_questions is patterns.make_questions
+    assert systemone.StallGuard is patterns.StallGuard
 
 
-def test_fallback_constants_match_api_when_heavy():
+def test_api_reexports_patterns_when_heavy():
     if importlib.util.find_spec("torch") is None:
         return  # slim env: nothing to compare against
     import systemone.api as api
+    import systemone.patterns as patterns
 
-    assert shim_module.MAX_STATE_CHARS == api.MAX_STATE_CHARS
+    assert api.MAX_STATE_CHARS is patterns.MAX_STATE_CHARS
+    assert api.SystemOneError is patterns.SystemOneError
+    assert api.validate_choice is patterns.validate_choice
+    assert api.make_questions is patterns.make_questions
     assert shim_module.SystemOne is api.SystemOne
 
 

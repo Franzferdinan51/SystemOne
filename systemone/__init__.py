@@ -61,6 +61,21 @@ from .metrics import (
     summarize,
     top_label_ece,
 )
+from .patterns import (
+    ABSTAIN_LABEL,
+    MAX_STATE_CHARS,
+    LatencyStats,
+    StallGuard,
+    SystemOneError,
+    build_decision_prompts,
+    choice_confidence,
+    make_questions,
+    noul_confidence,
+    score_confidence,
+    validate_choice,
+    validate_distribution,
+    with_abstain,
+)
 from .sglang_backend import HybridBackend, SGLangBackend, SGLangError
 
 __all__ = [
@@ -108,20 +123,7 @@ __all__ = [
 # torch. Maps attribute -> (submodule, name in submodule).
 _LAZY: dict[str, tuple[str, str]] = {
     "SystemOne": ("api", "SystemOne"),
-    "SystemOneError": ("api", "SystemOneError"),
-    "MAX_STATE_CHARS": ("api", "MAX_STATE_CHARS"),
-    "ABSTAIN_LABEL": ("api", "ABSTAIN_LABEL"),
-    "LatencyStats": ("api", "LatencyStats"),
-    "StallGuard": ("api", "StallGuard"),
     "default_device": ("api", "default_device"),
-    "make_questions": ("api", "make_questions"),
-    "validate_choice": ("api", "validate_choice"),
-    "validate_distribution": ("api", "validate_distribution"),
-    "with_abstain": ("api", "with_abstain"),
-    "choice_confidence": ("api", "choice_confidence"),
-    "score_confidence": ("api", "score_confidence"),
-    "noul_confidence": ("api", "noul_confidence"),
-    "build_decision_prompts": ("api", "build_decision_prompts"),
     "serve_shim": ("shim", "serve"),
 }
 

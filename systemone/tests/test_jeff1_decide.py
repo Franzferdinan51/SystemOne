@@ -10,7 +10,7 @@ sockets. Covers:
   state, malformed criteria for each type, non-object body)
 - lazy-load failure -> 503 (same pattern as the other endpoints)
 
-TypeSafe confidence reference (systemone/api.py):
+TypeSafe confidence reference (systemone/patterns.py, re-exported by api):
     choice: (n * p_max - 1) / (n - 1)
     score:  max(0, 1 - sum_i p_i * |i-k| / (n-1))
     noul:   max(P(yes), P(no))
@@ -28,7 +28,7 @@ import pytest
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
 
-from systemone.api import (  # noqa: E402
+from systemone.patterns import (  # noqa: E402 — canonical light source
     choice_confidence,
     noul_confidence,
     score_confidence,
