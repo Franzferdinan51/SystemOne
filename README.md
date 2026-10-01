@@ -121,7 +121,7 @@ never loads a model in-process. The shim URL resolves in this order:
 pip install -e .                     # slim: SGLang backend + shim client (numpy-only)
 pip install -e '.[local]'            # + torch/GLiClass local engine
 pip install -e '.[local,mcp,dev]'    # everything incl. MCP tools + pytest
-systemone --help          # route / decide / status / battery (+ legacy local/ask/serve)
+systemone --help          # route / decide / status / battery / jevbench (+ legacy local/ask/serve)
 systemone-acp --help      # ACP agent (stdio)
 ```
 
@@ -307,6 +307,17 @@ the probe.
   compression, uncertainty-gated actions
 - `examples/desktop_clean_dryrun.py` — desktop-cleaning planner: one choice
   question per file in a single batched call, dry-run by default
+
+## JevBench scoring
+
+`systemone jevbench --items public.jsonl --out preds.jsonl` scores a
+[JevBench](https://github.com/fstandhartinger/jevbench)-format split with
+any engine (`--engine auto|local|sglang`, default auto): accuracy overall
+and per family, mean latency, and per-item native probability distributions
+(Brier/ECE eligible — never verbalized). Items with a
+`provenance.exclude_reason` are skipped, and one bad item never kills a run.
+See `systemone/jevbench.py` (`score_item` / `run_file`); registering upstream
+would vendor that mapping into `jevbench/adapters/`.
 
 ## SGLang interop
 

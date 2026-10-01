@@ -21,11 +21,12 @@ the modules.
 | `scoring.py` | stdlib | route scoring, calibration application, model/tool ranking, LM Studio inventory |
 | `calibration.py` | numpy | temperature / Platt / isotonic calibrators, per-type maps |
 | `metrics.py` | numpy | `ece` / `brier` / `nll` / `aurc` / selective accuracy + tables |
-| `mcp_server.py` | `systemone[mcp,local]` | MCP tools over stdio (`typesafe_ask`, `verify_claims`, `screen_content`, `rank_candidates`) |
+| `mcp_server.py` | `systemone[mcp]` (shim tools) + local for engine tools | MCP tools over stdio (`typesafe_ask`, `verify_claims`, `screen_content`, `rank_candidates`, shim tools); engine tools lazy-load `systemone[local]` |
 | `acp_server.py` | stdlib | ACP agent adapter over stdio |
 | `distill.py` | stdlib | teacher labeling (`SyntheticTeacher`, `HFTeacher`, `LMStudioTeacher`) → GLiClass training JSON → `train.py` |
 | `tune.py` | stdlib | `make_training_json()` + `tune()` domain fine-tuning wrappers |
 | `battery/` | stdlib | regression battery runner + temperature fitting |
+| `jevbench.py` | stdlib + numpy | JevBench-split scoring adapter (`score_item`, `run_file`, `DecisionResult`); CLI: `systemone jevbench --items` |
 | `bench_2048.py` | varies | headless 2048 decision-loop benchmark (see docstring for limits) |
 | `tests/` | `pytest` (+ local for heavy tests) | suite: `pytest systemone/tests` runs green on a slim install; torch-only tests skip with a reason |
 | `examples/` | varies | runnable demos; SGLang/stub-capable ones import clean on slim |

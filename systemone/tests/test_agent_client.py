@@ -29,7 +29,7 @@ def _mcp():
 
         return mod
     except ImportError:
-        pytest.skip("needs systemone[mcp,local]")
+        pytest.skip("needs mcp<2 installed")
 
 
 BASE = "http://shim.test"

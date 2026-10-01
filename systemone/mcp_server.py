@@ -40,7 +40,6 @@ from typing import Any, Dict, List
 
 from mcp.server.fastmcp import FastMCP
 
-from .api import SystemOne
 from .calibration import PerTypeTemperatureCalibrator, TemperatureCalibrator
 from .client import ShimError, SystemOneClient, default_shim_url
 
@@ -71,6 +70,8 @@ def get_engine(model_name: str | None = None) -> SystemOne:
     previous model first.
     """
     global _engine, _engine_model
+    from .api import SystemOne  # local engine; needs systemone[local]
+
     wanted = (model_name or os.environ.get("SYSTEMONE_MODEL") or "").strip() or None
     if _engine is None or (wanted is not None and wanted != _engine_model):
         _engine = SystemOne(

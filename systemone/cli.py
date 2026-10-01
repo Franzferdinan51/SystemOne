@@ -263,6 +263,39 @@ def cmd_status(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_jevbench(args: argparse.Namespace) -> int:
+    """Score a JevBench jsonl split with a SystemOne engine."""
+    from .jevbench import run_file
+    from .shim import create_engine
+
+    try:
+        engine = create_engine(getattr(args, "engine", None))
+    except Exception as exc:
+        print(f"error: cannot build engine — {exc}", file=sys.stderr)
+        return 1
+    try:
+        summary = run_file(args.items, engine, out=args.out, limit=args.limit)
+    except OSError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
+    if args.json:
+        _print_json(summary)
+        return 0
+    acc = summary["accuracy"]
+    acc_s = f" ({acc:.1%})" if acc is not None else ""
+    print(f"jevbench: {summary['correct']}/{summary['scored']} correct{acc_s} "
+          f"over {summary['n']} items [{summary['model']}]")
+    if summary["mean_latency_ms"] is not None:
+        print(f"  mean latency : {summary['mean_latency_ms']} ms")
+    for fam, stats in sorted(summary["by_family"].items()):
+        facc = stats["accuracy"]
+        print(f"  {fam:<14}: {stats['correct']}/{stats['n']}"
+              + (f" ({facc:.1%})" if facc is not None else ""))
+    if summary.get("predictions"):
+        print(f"  predictions  : {summary['predictions']}")
+    return 0
+
+
 def cmd_battery(args: argparse.Namespace) -> int:
     """Run the regression battery against the live shim (passthrough args)."""
     from .battery import run as battery_run
@@ -484,6 +517,21 @@ def build_parser() -> argparse.ArgumentParser:
     p_status.add_argument("--json", action="store_true",
                           help="emit the status dict as JSON")
     p_status.set_defaults(func=cmd_status)
+
+    p_jevbench = sub.add_parser(
+        "jevbench", help="score a JevBench jsonl split with an engine")
+    p_jevbench.add_argument("--items", required=True,
+                            help="path to a JevBench-format .jsonl split")
+    p_jevbench.add_argument("--out", default=None,
+                            help="write per-item predictions as jsonl")
+    p_jevbench.add_argument("--limit", type=int, default=None,
+                            help="score at most N items")
+    p_jevbench.add_argument("--engine", default=None,
+                            choices=("auto", "local", "sglang"),
+                            help="engine (default: $SYSTEMONE_ENGINE or auto)")
+    p_jevbench.add_argument("--json", action="store_true",
+                            help="emit the raw summary as JSON")
+    p_jevbench.set_defaults(func=cmd_jevbench)
 
     p_battery = sub.add_parser(
         "battery", help="regression battery vs the live shim (args pass through)")
