@@ -1,7 +1,7 @@
 """Tests for the baked-in SGLang engine: selection, hybrid, client, health.
 
-Stdlib-only — no torch, no numpy, no network. These tests prove the SGLang
-path works on a slim install: they must pass with only pytest installed.
+No torch, no network (numpy is a base dependency). These tests prove the
+SGLang path works on a slim install.
 """
 
 import importlib.util
@@ -383,3 +383,57 @@ def test_serve_accepts_engine_name(monkeypatch):
         assert server.engine_backend == "sglang"
     finally:
         server.server_close()
+
+
+# -- URL scheme guards ----------------------------------------------------
+
+
+def test_client_rejects_non_http_base_url():
+    try:
+        SystemOneClient("file:///etc/passwd")
+    except ValueError as exc:
+        assert "http(s)" in str(exc)
+    else:
+        raise AssertionError("expected ValueError for file:// shim URL")
+
+
+def test_sglang_backend_rejects_non_http_base_url():
+    try:
+        SGLangBackend(base_url="ftp://example.com/x")
+    except ValueError as exc:
+        assert "http(s)" in str(exc)
+    else:
+        raise AssertionError("expected ValueError for ftp:// SGLang URL")
+
+
+def test_jeff1_url_rejects_non_http(monkeypatch):
+    from systemone import jeff1
+
+    monkeypatch.setenv("SYSTEMONE_JEFF1_URL", "file:///etc/passwd")
+    try:
+        jeff1.jeff1_url()
+    except ValueError:
+        pass
+    else:
+        raise AssertionError("expected ValueError for file:// sidecar URL")
+    # ...and the request path fails open (None) instead of raising.
+    monkeypatch.setenv("SYSTEMONE_JEFF1", "1")
+    assert jeff1._post("/x", {}, timeout=1) is None
+
+
+def test_lmstudio_teacher_rejects_non_http():
+    from systemone.distill import LMStudioTeacher
+
+    try:
+        LMStudioTeacher(base_url="file:///etc/passwd")
+    except ValueError:
+        pass
+    else:
+        raise AssertionError("expected ValueError for file:// teacher URL")
+
+
+def test_fetch_lmstudio_models_rejects_non_http(monkeypatch):
+    from systemone import scoring
+
+    monkeypatch.setenv("LMSTUDIO_BASE_URL", "file:///etc/passwd")
+    assert scoring.fetch_lmstudio_models() is None  # fail-open, no request

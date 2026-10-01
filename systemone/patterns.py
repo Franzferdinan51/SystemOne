@@ -51,6 +51,41 @@ def _resolve_candidates(model_name: str | None) -> List[str]:
     return [chosen] if chosen else list(MODEL_CANDIDATES)
 
 
+REVISION_ENV = "SYSTEMONE_REVISION"
+
+
+def resolve_revision(explicit: str | None = None) -> str | None:
+    """HF revision pin: explicit arg wins, then $SYSTEMONE_REVISION.
+
+    Returns None when unpinned (default branch). Threaded through to
+    from_pretrained calls so model/tokenizer downloads are reproducible
+    and immune to tag moves.
+    """
+    rev = (explicit or "").strip() or (os.environ.get(REVISION_ENV) or "").strip()
+    return rev or None
+
+
+def require_http_url(url: str, *, what: str = "URL") -> str:
+    """Fail closed unless `url` is an http(s) URL.
+
+    urllib honors file:// and other schemes, so every operator-configured
+    base URL (shim, sidecar, SGLang, LM Studio) passes through here before
+    any request is built. Raises ValueError on empty/unparseable input or
+    any non-http(s) scheme. No host allowlist: operators may point at
+    tailnets and LAN hosts freely.
+    """
+    from urllib.parse import urlsplit
+
+    text = (url or "").strip()
+    try:
+        scheme = urlsplit(text).scheme.lower()
+    except ValueError:
+        scheme = ""
+    if scheme not in ("http", "https"):
+        raise ValueError(f"{what} must be an http(s) URL, got {text[:80]!r}")
+    return text
+
+
 class SystemOneError(RuntimeError):
     """Sanitized engine failure.
 

@@ -520,11 +520,19 @@ def fetch_lmstudio_models(
     base_url: Optional[str] = None, timeout: float = 1.5
 ) -> Optional[List[str]]:
     """GET <lmstudio>/v1/models -> [ids]. None on any failure (fail-open)."""
-    base = (base_url or os.environ.get("LMSTUDIO_BASE_URL")
-            or "http://127.0.0.1:1234").rstrip("/")
+    from .patterns import require_http_url
+
+    try:
+        base = require_http_url(
+            (base_url or os.environ.get("LMSTUDIO_BASE_URL")
+             or "http://127.0.0.1:1234").rstrip("/"),
+            what="LM Studio URL",
+        )
+    except ValueError:
+        return None
     try:
         req = urllib.request.Request(base + "/v1/models", method="GET")
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:  # nosec B310 -- scheme enforced above via patterns.require_http_url; nosemgrep
             data = json.loads(resp.read().decode("utf-8"))
         items = data.get("data", []) if isinstance(data, dict) else []
         return [it.get("id") for it in items

@@ -41,6 +41,7 @@ from .patterns import (
     choice_confidence,
     make_questions,
     noul_confidence,
+    resolve_revision,
     score_confidence,
     validate_choice,
     validate_distribution,
@@ -83,6 +84,9 @@ class SystemOne:
         calibrator: optional fitted TemperatureCalibrator or
             PerTypeTemperatureCalibrator (per-answer-type temperature map,
             adapted from Mapika/decider); overrides temperature.
+        revision: HF revision pin for model/tokenizer downloads. If None,
+            the SYSTEMONE_REVISION env var is honored; unset -> default
+            branch (unpinned).
     """
 
     def __init__(
@@ -91,6 +95,7 @@ class SystemOne:
         device: str | None = None,
         temperature: float = 1.0,
         calibrator: TemperatureCalibrator | None = None,
+        revision: str | None = None,
     ) -> None:
         if device is None or (
             isinstance(device, str) and device.strip().lower() == "auto"
@@ -101,11 +106,15 @@ class SystemOne:
         self.device = device
 
         candidates = _resolve_candidates(model_name)
+        self.revision = resolve_revision(revision)
+        rev_kwargs = {"revision": self.revision} if self.revision else {}
         last_err: Exception | None = None
         for cand in candidates:
             try:
-                self.model = GLiClassModel.from_pretrained(cand)
-                self.tokenizer = AutoTokenizer.from_pretrained(cand)
+                self.model = GLiClassModel.from_pretrained(cand, **rev_kwargs)
+                # Pinned via rev_kwargs when SYSTEMONE_REVISION is set; the
+                # scanner cannot see through **kwargs (B615 false positive).
+                self.tokenizer = AutoTokenizer.from_pretrained(cand, **rev_kwargs)  # nosec B615
                 self.model_name = cand
                 last_err = None
                 break

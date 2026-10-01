@@ -48,8 +48,17 @@ def jeff1_enabled() -> bool:
 
 
 def jeff1_url() -> str:
-    """Sidecar base URL (default http://127.0.0.1:8079)."""
-    return os.environ.get("SYSTEMONE_JEFF1_URL", "").strip() or DEFAULT_URL
+    """Sidecar base URL (default http://127.0.0.1:8079).
+
+    Raises ValueError on a non-http(s) URL (fail-closed scheme check;
+    _post swallows it into the usual fail-open None).
+    """
+    from .patterns import require_http_url
+
+    return require_http_url(
+        os.environ.get("SYSTEMONE_JEFF1_URL", "").strip() or DEFAULT_URL,
+        what="sidecar URL",
+    )
 
 
 def jeff1_timeout() -> float:
@@ -79,15 +88,15 @@ def _post(path: str, payload: Dict[str, Any],
     """POST JSON to the sidecar; parsed body or None on any failure."""
     if not jeff1_enabled():
         return None
-    url = jeff1_url().rstrip("/") + path
     try:
+        url = jeff1_url().rstrip("/") + path
         req = urllib.request.Request(
             url,
             data=json.dumps(payload).encode("utf-8"),
             headers={"Content-Type": "application/json"},
             method="POST",
         )
-        with urllib.request.urlopen(
+        with urllib.request.urlopen(  # nosec B310 -- scheme enforced in jeff1_url() via patterns.require_http_url; nosemgrep
             req, timeout=timeout if timeout is not None else jeff1_timeout()
         ) as resp:
             if resp.status != 200:

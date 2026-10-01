@@ -41,7 +41,7 @@ from typing import Any, Dict, List
 from mcp.server.fastmcp import FastMCP
 
 from .api import SystemOne
-from .calibration import TemperatureCalibrator
+from .calibration import PerTypeTemperatureCalibrator, TemperatureCalibrator
 from .client import ShimError, SystemOneClient, default_shim_url
 
 mcp = FastMCP("systemone")
@@ -78,14 +78,17 @@ def get_engine(model_name: str | None = None) -> SystemOne:
             device=os.environ.get("SYSTEMONE_DEVICE"),
         )
         _engine_model = _engine.model_name
-        # Optional: point SYSTEMONE_CALIBRATOR at a pickled TemperatureCalibrator
+        # Optional: point SYSTEMONE_CALIBRATOR at a JSON calibrator file
+        # (TemperatureCalibrator.save() format; per-type maps also accepted).
         cal_path = os.environ.get("SYSTEMONE_CALIBRATOR")
         if cal_path and os.path.exists(cal_path):
-            import pickle
+            from .calibration import load_calibrator_file
 
-            with open(cal_path, "rb") as f:
-                cal = pickle.load(f)
-            if isinstance(cal, TemperatureCalibrator):
+            try:
+                cal = load_calibrator_file(cal_path)
+            except Exception:
+                cal = None  # corrupt file: serve raw, never crash the engine
+            if isinstance(cal, (TemperatureCalibrator, PerTypeTemperatureCalibrator)):
                 _engine.set_calibrator(cal)
     return _engine
 

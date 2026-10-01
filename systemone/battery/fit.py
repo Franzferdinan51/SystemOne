@@ -32,6 +32,9 @@ import urllib.request
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 
+sys.path.insert(0, os.path.join(HERE, "..", ".."))  # runnable as a script, too
+from systemone.patterns import require_http_url  # noqa: E402
+
 try:
     import numpy as np
 except ImportError:
@@ -41,12 +44,12 @@ except ImportError:
 def post_probs(base_url: str, task: str) -> dict:
     body = json.dumps({"task": task}).encode("utf-8")
     req = urllib.request.Request(
-        base_url.rstrip("/") + "/v1/systemone/route",
+        require_http_url(base_url.rstrip("/"), what="shim URL") + "/v1/systemone/route",
         data=body,
         headers={"Content-Type": "application/json"},
         method="POST",
     )
-    with urllib.request.urlopen(req, timeout=30) as resp:
+    with urllib.request.urlopen(req, timeout=30) as resp:  # nosec B310 -- scheme enforced above via patterns.require_http_url; nosemgrep
         payload = json.loads(resp.read().decode("utf-8"))
     return payload["route"]["probabilities"]
 

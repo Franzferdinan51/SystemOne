@@ -87,7 +87,11 @@ class LMStudioTeacher:
 
     def __init__(self, base_url: str = "http://localhost:1234/v1",
                  model: str | None = None):
-        self.base_url = base_url.rstrip("/")
+        from .patterns import require_http_url
+
+        self.base_url = require_http_url(
+            base_url.rstrip("/"), what="LM Studio URL"
+        )
         self.model = model
 
     def label_many(self, texts: Sequence[str], labels: Sequence[str],
@@ -111,7 +115,7 @@ class LMStudioTeacher:
                 data=body,
                 headers={"Content-Type": "application/json"},
             )
-            with urllib.request.urlopen(req, timeout=120) as resp:
+            with urllib.request.urlopen(req, timeout=120) as resp:  # nosec B310 -- scheme enforced in __init__ via patterns.require_http_url; nosemgrep
                 data = json.loads(resp.read().decode())
             raw = data["choices"][0]["message"]["content"].strip().lower()
             hit = next((l for l in labels if l.lower() in raw), labels[0])

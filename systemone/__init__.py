@@ -138,10 +138,15 @@ def __getattr__(name: str) -> Any:
     if target is None:
         raise AttributeError(f"module 'systemone' has no attribute {name!r}")
     module_name, attr = target
+    # Static imports only: the lazy table can name just "api"/"shim", and
+    # anything else fails closed here instead of reaching importlib.
     try:
-        from importlib import import_module
-
-        module = import_module(f".{module_name}", __name__)
+        if module_name == "api":
+            from . import api as module
+        elif module_name == "shim":
+            from . import shim as module
+        else:  # pragma: no cover - unreachable via the _LAZY table above
+            raise ImportError(f"unknown lazy module {module_name!r}")
         return getattr(module, attr)
     except ImportError as exc:
         raise ImportError(

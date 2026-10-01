@@ -37,6 +37,9 @@ import urllib.error
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 
+sys.path.insert(0, os.path.join(HERE, "..", ".."))  # runnable as a script, too
+from systemone.patterns import require_http_url  # noqa: E402
+
 BASE_REQUIRED = [
     "tier", "model_id", "confidence", "probabilities", "effort", "task_labels",
 ]
@@ -55,14 +58,14 @@ REQUEST_TIMEOUT_S = 30
 def post_route(base_url: str, task: str) -> tuple[dict, float]:
     body = json.dumps({"task": task}).encode("utf-8")
     req = urllib.request.Request(
-        base_url.rstrip("/") + "/v1/systemone/route",
+        require_http_url(base_url.rstrip("/"), what="shim URL") + "/v1/systemone/route",
         data=body,
         headers={"Content-Type": "application/json"},
         method="POST",
     )
     t0 = time.perf_counter()
     try:
-        with urllib.request.urlopen(req, timeout=REQUEST_TIMEOUT_S) as resp:
+        with urllib.request.urlopen(req, timeout=REQUEST_TIMEOUT_S) as resp:  # nosec B310 -- scheme enforced above via patterns.require_http_url; nosemgrep
             payload = json.loads(resp.read().decode("utf-8"))
     except urllib.error.HTTPError as e:
         raise RuntimeError(f"HTTP {e.code}: {e.read()[:200]!r}")

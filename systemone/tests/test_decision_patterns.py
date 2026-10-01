@@ -99,3 +99,37 @@ def test_latency_stats():
     assert out["median_ms"] == 30
     assert out["p95_ms"] == 100
     assert out["mean_ms"] == 40.0
+
+
+# -- security helpers (patterns.require_http_url / resolve_revision) -------
+
+
+def test_require_http_url_accepts_http_and_https():
+    from systemone.patterns import require_http_url
+
+    assert require_http_url("http://127.0.0.1:8765") == "http://127.0.0.1:8765"
+    assert require_http_url("  https://gpu-box:30000/x ") == "https://gpu-box:30000/x"
+
+
+def test_require_http_url_rejects_non_http():
+    from systemone.patterns import require_http_url
+
+    for bad in ("file:///etc/passwd", "ftp://x/y", "gopher://x", "",
+                "///no-scheme", "notaurl"):
+        try:
+            require_http_url(bad, what="test URL")
+        except ValueError as exc:
+            assert "test URL" in str(exc)
+        else:
+            raise AssertionError(f"expected ValueError for {bad!r}")
+
+
+def test_resolve_revision_precedence(monkeypatch):
+    from systemone.patterns import resolve_revision
+
+    monkeypatch.delenv("SYSTEMONE_REVISION", raising=False)
+    assert resolve_revision(None) is None
+    assert resolve_revision("  abc123 ") == "abc123"
+    monkeypatch.setenv("SYSTEMONE_REVISION", "env-rev")
+    assert resolve_revision(None) == "env-rev"
+    assert resolve_revision("explicit") == "explicit"  # explicit wins

@@ -31,7 +31,12 @@ local = [
     "huggingface_hub",
     "gliclass @ git+https://github.com/Franzferdinan51/GLiClass",
 ]
-mcp = ["mcp<2"]
+mcp = [
+    "mcp<2",
+    # CVE floor: pyjwt <2.15 has known auth-bypass advisories and rides in
+    # via mcp's server deps (pip-audit 2026-10-01: CVE-2026-101918 et al).
+    "pyjwt>=2.15",
+]
 dev = ["pytest"]
 
 [project.scripts]

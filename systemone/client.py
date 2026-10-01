@@ -52,7 +52,11 @@ class SystemOneClient:
     """HTTP client for the SystemOne shim's agent endpoints."""
 
     def __init__(self, base_url: Optional[str] = None, timeout: float = 120.0) -> None:
-        self.base_url = (base_url or default_shim_url()).rstrip("/")
+        from .patterns import require_http_url
+
+        self.base_url = require_http_url(
+            (base_url or default_shim_url()).rstrip("/"), what="shim URL"
+        )
         self.timeout = timeout
 
     # -- transport ------------------------------------------------------
@@ -68,7 +72,7 @@ class SystemOneClient:
             self.base_url + path, data=data, headers=headers, method=method
         )
         try:
-            with urllib.request.urlopen(req, timeout=self.timeout) as resp:
+            with urllib.request.urlopen(req, timeout=self.timeout) as resp:  # nosec B310 -- scheme enforced in __init__ via patterns.require_http_url; nosemgrep
                 body = resp.read()
         except urllib.error.HTTPError as exc:
             detail = exc.read().decode("utf-8", "replace")

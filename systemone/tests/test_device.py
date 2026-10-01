@@ -64,3 +64,35 @@ def test_explicit_device_is_honored(monkeypatch):
     _stub_loading(monkeypatch)
     eng = SystemOne(model_name="dummy-checkpoint", device="cpu")
     assert eng.device == "cpu"
+
+
+def test_revision_pin_reaches_from_pretrained(monkeypatch):
+    seen = {}
+
+    class _Dummy:
+        pass
+
+    def _capture(kind):
+        def go(cls, model_id, **kwargs):
+            seen[kind] = (model_id, kwargs)
+            return _Dummy()
+        return classmethod(go)
+
+    monkeypatch.setattr(api.GLiClassModel, "from_pretrained", _capture("model"))
+    monkeypatch.setattr(api.AutoTokenizer, "from_pretrained", _capture("tok"))
+    monkeypatch.setattr(
+        api, "ZeroShotClassificationPipeline",
+        lambda model, tokenizer, device=None, **kw: None,
+    )
+    eng = SystemOne(model_name="dummy-checkpoint", device="cpu",
+                    revision="abc123")
+    assert eng.revision == "abc123"
+    assert seen["model"][1] == {"revision": "abc123"}
+    assert seen["tok"][1] == {"revision": "abc123"}
+
+
+def test_revision_defaults_unpinned(monkeypatch):
+    monkeypatch.delenv("SYSTEMONE_REVISION", raising=False)
+    _stub_loading(monkeypatch)
+    eng = SystemOne(model_name="dummy-checkpoint", device="cpu")
+    assert eng.revision is None

@@ -387,3 +387,56 @@ def test_fit_types_merges_into_calibration_json(tmp_path):
     assert "choice" in merged["temperature_by_type"]
     assert merged["temperature_by_type"]["choice"] > 1.0
     assert merged["per_type_rows"]["choice"] == 120
+
+
+# -- calibrator JSON files (safe alternative to pickle) --------------------
+
+
+def test_temperature_calibrator_json_round_trip(tmp_path):
+    from systemone.calibration import TemperatureCalibrator
+
+    cal = TemperatureCalibrator()
+    cal.temperature_, cal.fitted_ = 1.7, True
+    path = str(tmp_path / "cal.json")
+    assert cal.save(path) == path
+    loaded = TemperatureCalibrator.load(path)
+    assert loaded.temperature_ == pytest.approx(1.7)
+    assert loaded.fitted_ is True
+
+
+def test_temperature_calibrator_from_dict_fails_open():
+    from systemone.calibration import TemperatureCalibrator
+
+    assert TemperatureCalibrator.from_dict({}).temperature_ == 1.0
+    assert TemperatureCalibrator.from_dict({"temperature": -3}).temperature_ == 1.0
+    assert TemperatureCalibrator.from_dict({"temperature": "junk"}).temperature_ == 1.0
+
+
+def test_load_calibrator_file_dispatches_by_kind(tmp_path):
+    import pickle
+
+    from systemone.calibration import (
+        PerTypeTemperatureCalibrator,
+        TemperatureCalibrator,
+        load_calibrator_file,
+    )
+
+    pooled = tmp_path / "pooled.json"
+    pooled.write_text(json.dumps({"temperature": 2.0}))
+    got = load_calibrator_file(str(pooled))
+    assert isinstance(got, TemperatureCalibrator)
+    assert got.temperature_ == pytest.approx(2.0)
+
+    per_type = tmp_path / "types.json"
+    per_type.write_text(json.dumps({
+        "temperature": 1.0, "temperature_by_type": {"choice": 1.5},
+    }))
+    got = load_calibrator_file(str(per_type))
+    assert isinstance(got, PerTypeTemperatureCalibrator)
+    assert got.temperature_for("choice") == pytest.approx(1.5)
+
+    legacy = tmp_path / "legacy.pkl"
+    legacy.write_bytes(pickle.dumps({"not": "a calibrator"}))
+    with pytest.warns(DeprecationWarning, match="re-save as JSON"):
+        got = load_calibrator_file(str(legacy))
+    assert got == {"not": "a calibrator"}  # legacy path preserves behavior

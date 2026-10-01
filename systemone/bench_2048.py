@@ -40,6 +40,7 @@ os.environ.setdefault("TRANSFORMERS_OFFLINE", "1")
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from systemone.shim import serve  # noqa: E402
+from systemone.patterns import require_http_url  # noqa: E402
 
 # Four canned board snapshots (4x4). Cycled through; the point is the
 # decision loop, not the game.
@@ -75,12 +76,12 @@ RULES = ["Pick exactly one of the four slides.", "Never repeat the previous slid
 
 def post_json(url: str, body: dict) -> dict:
     req = urllib.request.Request(
-        url,
+        require_http_url(url, what="shim URL"),
         data=json.dumps(body).encode(),
         headers={"Content-Type": "application/json"},
         method="POST",
     )
-    with urllib.request.urlopen(req, timeout=120) as resp:
+    with urllib.request.urlopen(req, timeout=120) as resp:  # nosec B310 -- scheme enforced above via patterns.require_http_url; nosemgrep
         return json.loads(resp.read())
 
 
@@ -101,7 +102,8 @@ def decide_move(base_url: str, board: str) -> tuple[str, float]:
     payload = post_json(f"{base_url}/v1/systemone", body)
     ms = (time.perf_counter() - t0) * 1000.0
     move = payload["answers"]["move"]["choice"]
-    assert move in MOVES, f"engine returned invalid move: {move!r}"
+    if move not in MOVES:
+        raise RuntimeError(f"engine returned invalid move: {move!r}")
     return move, ms
 
 

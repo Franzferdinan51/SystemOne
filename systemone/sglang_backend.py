@@ -21,9 +21,9 @@ things the local GLiClass engine cannot do:
   prompt prefix is served from SGLang's RadixAttention KV cache; sub-100ms
   decisions are architecturally plausible on a decent GPU.
 
-This module is intentionally stdlib-only (urllib): it does not import
-torch or gliclass, so it can run on any machine that can reach the
-SGLang server — e.g. the Mac calling an SGLang instance on the PC.
+This module never imports torch or gliclass (only stdlib plus the shared
+patterns helper), so it can run on any machine that can reach the SGLang
+server — e.g. the Mac calling an SGLang instance on the PC.
 
 Configuration (env):
     SGLANG_BASE_URL   e.g. http://127.0.0.1:30000  (default)
@@ -163,10 +163,13 @@ class SGLangBackend:
         timeout: float | None = None,
         temperature: float = 1.0,
     ) -> None:
-        self.base_url = (
+        from .patterns import require_http_url
+
+        self.base_url = require_http_url(
             (base_url or os.environ.get("SGLANG_BASE_URL") or "http://127.0.0.1:30000")
             .strip()
-            .rstrip("/")
+            .rstrip("/"),
+            what="SGLang base URL",
         )
         self.model = model or (os.environ.get("SGLANG_MODEL") or "").strip() or None
         env_timeout = (os.environ.get("SGLANG_TIMEOUT") or "").strip()
@@ -190,7 +193,7 @@ class SGLangBackend:
             method="POST",
         )
         try:
-            with urllib.request.urlopen(req, timeout=self.timeout) as resp:
+            with urllib.request.urlopen(req, timeout=self.timeout) as resp:  # nosec B310 -- scheme enforced in __init__ via patterns.require_http_url; nosemgrep
                 return json.loads(resp.read().decode("utf-8") or "{}")
         except urllib.error.HTTPError as e:
             detail = ""
@@ -216,7 +219,7 @@ class SGLangBackend:
         for path in ("/health", "/healthz"):
             try:
                 req = urllib.request.Request(f"{self.base_url}{path}", method="GET")
-                with urllib.request.urlopen(req, timeout=5) as resp:
+                with urllib.request.urlopen(req, timeout=5) as resp:  # nosec B310 -- scheme enforced in __init__ via patterns.require_http_url; nosemgrep
                     if resp.status == 200:
                         return True
             except Exception:
@@ -497,7 +500,7 @@ class HybridBackend:
     instead of raising — the local judge already answered, so dropping its
     answers for a transport error would be strictly worse.
 
-    Stdlib-only and duck-typed: this class never imports torch/gliclass,
+    Torch-free and duck-typed: this class never imports torch/gliclass,
     so it can be constructed (with sglang-only) on a slim install.
     """
 

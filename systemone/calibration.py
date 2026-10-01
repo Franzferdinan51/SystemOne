@@ -123,6 +123,38 @@ class TemperatureCalibrator:
     def predict_proba(self, scores: Sequence[Sequence[float]]) -> np.ndarray:
         return softmax(np.asarray(scores, dtype=np.float64) / self.temperature_)
 
+    def to_dict(self) -> Dict[str, Any]:
+        """JSON-serializable dict (the safe alternative to pickling)."""
+        return {
+            "kind": "temperature",
+            "temperature": self.temperature_,
+            "fitted": self.fitted_,
+        }
+
+    @classmethod
+    def from_dict(cls, d: Dict[str, Any]) -> "TemperatureCalibrator":
+        """Load from a to_dict()-style dict; insane values fail open to T=1."""
+        obj = cls()
+        try:
+            T = float(d.get("temperature", 1.0))
+        except (TypeError, ValueError):
+            T = 1.0
+        obj.temperature_ = T if (np.isfinite(T) and T > 0) else 1.0
+        obj.fitted_ = bool(d.get("fitted", True))
+        return obj
+
+    def save(self, path: str) -> str:
+        """Write the to_dict() payload to a JSON file."""
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(self.to_dict(), f, indent=2)
+        return path
+
+    @classmethod
+    def load(cls, path: str) -> "TemperatureCalibrator":
+        """Load a calibrator previously written by save()."""
+        with open(path, "r", encoding="utf-8") as f:
+            return cls.from_dict(json.load(f))
+
 
 class PlattCalibrator:
     """Binary Platt scaling: p = sigmoid(a * score + b).
@@ -456,6 +488,39 @@ def fit_temperature_by_type(
 ) -> PerTypeTemperatureCalibrator:
     """Fit a per-answer-type temperature map from logged decision records."""
     return PerTypeTemperatureCalibrator(min_rows=min_rows).fit(records)
+
+
+def load_calibrator_file(path: str) -> Any:
+    """Load a calibrator from a JSON file, any supported kind.
+
+    Per-type maps (dicts carrying "temperature_by_type") load as
+    PerTypeTemperatureCalibrator; anything else dict-shaped loads as
+    TemperatureCalibrator (fail-open to T=1 on insane values). Legacy
+    pickled calibrators still load, with a DeprecationWarning pointing at
+    JSON — pickle executes code at load time, so JSON files (data-only)
+    are the safe format going forward.
+    """
+    import pickle
+    import warnings
+
+    with open(path, "rb") as f:
+        raw = f.read()
+    try:
+        d = json.loads(raw.decode("utf-8"))
+    except (ValueError, UnicodeDecodeError):
+        d = None
+    if isinstance(d, dict):
+        if "temperature_by_type" in d:
+            return PerTypeTemperatureCalibrator.from_dict(d)
+        return TemperatureCalibrator.from_dict(d)
+    warnings.warn(
+        f"pickled calibrator at {path}: pickle executes code at load time; "
+        "re-save as JSON (calibrator.save(path))",
+        DeprecationWarning,
+        stacklevel=2,
+    )
+    with open(path, "rb") as f:
+        return pickle.load(f)  # nosec B301 -- legacy operator-owned files only; JSON is the documented format # nosemgrep: python.lang.security.deserialization.pickle.avoid-pickle
 
 
 def load_type_calibration(path: str) -> PerTypeTemperatureCalibrator | None:
