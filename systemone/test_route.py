@@ -497,7 +497,7 @@ def test_latency_logged_on_errors(log_file):
 
 def test_resolve_candidates_env_override(monkeypatch):
     """No model load — pure load-order logic for the SYSTEMONE_MODEL hint."""
-    from systemone.api import _resolve_candidates, MODEL_CANDIDATES
+    from systemone.patterns import _resolve_candidates, MODEL_CANDIDATES
 
     monkeypatch.delenv("SYSTEMONE_MODEL", raising=False)
     assert _resolve_candidates(None) == MODEL_CANDIDATES

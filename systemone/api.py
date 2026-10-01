@@ -14,7 +14,6 @@ Only ONE local model is ever loaded per SystemOne instance.
 
 from __future__ import annotations
 
-import os
 import time
 from typing import Any, Dict, List, Sequence
 
@@ -33,9 +32,11 @@ from .calibration import (
 from .patterns import (
     ABSTAIN_LABEL,
     MAX_STATE_CHARS,
+    MODEL_CANDIDATES,
     LatencyStats,
     StallGuard,
     SystemOneError,
+    _resolve_candidates,
     build_decision_prompts,
     choice_confidence,
     make_questions,
@@ -45,21 +46,6 @@ from .patterns import (
     validate_distribution,
     with_abstain,
 )
-
-# Smallest-first candidates; the first that loads wins.
-MODEL_CANDIDATES = [
-    "knowledgator/gliclass-edge-v3.0",
-    "knowledgator/gliclass-small-v1.0",
-    "knowledgator/gliclass-base-v1.0",
-]
-
-def _resolve_candidates(model_name: str | None) -> List[str]:
-    """Model load order: explicit arg wins, then the SYSTEMONE_MODEL env var,
-    then MODEL_CANDIDATES smallest-first. Keeps the error hint below honest —
-    an override that doesn't change load order is just aspirational."""
-    chosen = (model_name or "").strip() or (os.environ.get("SYSTEMONE_MODEL") or "").strip()
-    return [chosen] if chosen else list(MODEL_CANDIDATES)
-
 
 def default_device() -> str:
     """Best torch device for this machine: CUDA > Apple MPS > CPU.

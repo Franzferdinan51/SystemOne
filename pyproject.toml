@@ -40,3 +40,6 @@ systemone-acp = "systemone.acp_server:main"
 
 [tool.setuptools.packages.find]
 include = ["systemone*"]
+
+[tool.pytest.ini_options]
+markers = ["slow: loads real model weights (opt-in; deselect with -m 'not slow')"]

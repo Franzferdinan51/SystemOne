@@ -12,6 +12,7 @@ install:
 - make_questions: convenience builder for question lists
 - choice/score/noul_confidence: TypeSafe-compatible confidence definitions
 - build_decision_prompts: state-first prompt rows with option shuffling
+- MODEL_CANDIDATES / _resolve_candidates: smallest-first load order + env override
 
 The decision patterns are ported from Ryan's jev-ultrafast / mobile-jev
 agent repos (both TypeSafe-hosted apps; what transfers is their
@@ -23,6 +24,7 @@ battle-tested decision-engineering discipline, not their transport).
 from __future__ import annotations
 
 import math
+import os
 import random
 from typing import Any, Dict, List, Sequence
 
@@ -32,6 +34,21 @@ import numpy as np
 # for the routing task). The encoder truncates to 512 tokens anyway, so the
 # cap only bounds memory/log noise — it does not change judgments.
 MAX_STATE_CHARS = 6000
+
+# Smallest-first candidates; the first that loads wins.
+MODEL_CANDIDATES = [
+    "knowledgator/gliclass-edge-v3.0",
+    "knowledgator/gliclass-small-v1.0",
+    "knowledgator/gliclass-base-v1.0",
+]
+
+
+def _resolve_candidates(model_name: str | None) -> List[str]:
+    """Model load order: explicit arg wins, then the SYSTEMONE_MODEL env var,
+    then MODEL_CANDIDATES smallest-first. Keeps the error hint below honest —
+    an override that doesn't change load order is just aspirational."""
+    chosen = (model_name or "").strip() or (os.environ.get("SYSTEMONE_MODEL") or "").strip()
+    return [chosen] if chosen else list(MODEL_CANDIDATES)
 
 
 class SystemOneError(RuntimeError):

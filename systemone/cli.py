@@ -29,12 +29,11 @@ import json
 import os
 import sys
 
-from .patterns import MAX_STATE_CHARS, SystemOneError
+from .patterns import MAX_STATE_CHARS, MODEL_CANDIDATES, SystemOneError
 
 try:
-    from .api import MODEL_CANDIDATES, SystemOne, default_device
+    from .api import SystemOne, default_device
 except ImportError:  # slim install: shim-client + direct-SGLang commands only
-    MODEL_CANDIDATES = ["knowledgator/gliclass-edge-v3.0"]
     SystemOne = None  # type: ignore[assignment,misc]
 
     def default_device() -> str:
