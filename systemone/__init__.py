@@ -59,10 +59,13 @@ from .metrics import (
     top_label_ece,
 )
 from .shim import serve as serve_shim
+from .sglang_backend import SGLangBackend, SGLangError
 
 __all__ = [
     "SystemOne",
     "SystemOneError",
+    "SGLangBackend",
+    "SGLangError",
     "MAX_STATE_CHARS",
     "ABSTAIN_LABEL",
     "LatencyStats",

@@ -291,6 +291,68 @@ the probe.
 - `examples/demo_speculative.py` — speculative multi-head: decide the operation
   AND its target argument in one batched pass (from `jev-ultrafast`)
 - `examples/sample_decision_data.json` — routing + guardrail records in tune() format
+- `examples/demo_sglang_backend.py` — same questions judged by the local
+  engine and by SGLang's `/v1/decisions` side by side
+- `examples/demo_decision_loop.py` — the fast agent loop: one batched
+  decisions call per tick (action + stuck? + progress), StallGuard, turn
+  compression, uncertainty-gated actions
+- `examples/desktop_clean_dryrun.py` — desktop-cleaning planner: one choice
+  question per file in a single batched call, dry-run by default
+
+## SGLang interop
+
+SystemOne speaks both sides of SGLang's decision API — no new dependencies,
+nothing in the existing behavior changes.
+
+**Serve SGLang's dialect locally.** The shim answers
+`POST /v1/decisions` with SGLang's request/response shape (choices as
+`[{"name": ...}]`, `yes_no` booleans, per-id `answers`, `label_mass`),
+so any client written against SGLang works unchanged against this box:
+
+    curl -s localhost:8765/v1/decisions -d '{
+      "input": "desktop with 47 icons, mostly screenshots",
+      "questions": [
+        {"id": "action", "type": "choice",
+         "question": "What should the agent do next?",
+         "options": [{"name": "up"}, {"name": "down"}, {"name": "wait"}]},
+        {"id": "stuck", "type": "yes_no",
+         "question": "Is the agent stuck?"}]}'
+
+Choice is limited to 2–26 options and score to 2–10 levels (422 beyond
+that), mirroring SGLang — past 26 options SGLang switches to two-letter
+labels with order-dependent priors, so we refuse rather than silently
+miscalibrate. `label_mass` comes back `null` here; that uncertainty
+signal only exists on a real SGLang server.
+
+**Use a real SGLang server as the judge.** `SGLangBackend` is a drop-in
+for `SystemOne` with identical question shapes — point it at a served
+model and get bigger judges and prefix-cached sub-100ms loops.
+(Heads-up, verified 2026-09-30: the endpoints are main-branch/nightly
+only, not in any tagged SGLang release — pin a nightly build. And the
+decisions docs describe no image path; `images=` is experimental and
+unverified against the nightly server.):
+
+    from systemone import SGLangBackend
+    eng = SGLangBackend()  # SGLANG_BASE_URL, SGLANG_MODEL, SGLANG_TIMEOUT
+    answers = eng.systemone(state, questions, images=[screenshot_data_uri])
+    answers["action"]["label_mass"]  # low => the model wanted an OOV answer
+
+Every answer carries `label_mass`; gate on it (fall back to a fuller
+reasoning call when it's low) instead of acting on a guess.
+
+**The fast agent loop.** `demo_decision_loop.py` distills the pattern:
+byte-identical prompt prefix every tick (RadixAttention cache reuse),
+one batched call carrying the action choice plus boolean/score side
+questions, only the latest observation carried raw with older turns
+compressed to "I saw / thought / did" one-liners, `StallGuard` on
+progress, and a hard step budget. `desktop_clean_dryrun.py` applies the
+same shape to file organization — one choice question per file, one
+HTTP round trip, human-approved dry-run plan before anything moves.
+
+**Calibration caveat.** SGLang's probabilities can drift ~0.07 between
+cold and prefix-cached requests. The calibration battery should pin or
+quantify cache state before comparing SGLang judges against the local
+engine — otherwise you're measuring the cache, not the model.
 
 ## Design notes
 

@@ -18,7 +18,13 @@ is the endpoint passed to `post_json`:
     post_json("http://127.0.0.1:8765/v1/systemone", "local", body)
 
 Endpoints:
-    POST /v1/systemone        TypeSafe dialect (see below)
+    POST /v1/systemone        TypeSafe dialect (see below); also accepts
+                              SGLang's options-list question shape and
+                              yes_no questions, plus list-form questions
+    POST /v1/decisions        SGLang's /v1/decisions dialect (choice / score /
+                              yes_no, label_mass), served by the local engine
+                              — one call, N typed questions, single batched
+                              pass (see below)
     POST /v1/systemone/route  model router: pick the cheapest sufficient
                               local tier for a task (see below)
     POST /v1/systemone/rank-plans
@@ -823,11 +829,37 @@ def translate_question(name: str, q: Dict[str, Any]) -> Dict[str, Any]:
 
     {"type": "choice", "criteria": {opt: desc|{...}}, "instructions": ...}
     becomes {"name", "type": "choice", "options": [...], "prompt": ...}.
+
+    Also accepts SGLang's /v1/systemone question shape (wire-compat):
+    {"type": "choice", "question": "...", "options": [{"name": ...}, ...]}
+    and {"type": "yes_no", "question": "..."} -> noul. The two shapes are
+    distinguished by the presence of "criteria" (TypeSafe) vs a list-valued
+    "options" (SGLang).
     """
     qtype = q.get("type", "choice")
+    if qtype == "yes_no":
+        # SGLang boolean question -> local noul; handled before the shape
+        # dispatch below since there are no options to speak of.
+        statement = (q.get("question")
+                     or _render_instructions(q.get("instructions"))
+                     or str(q.get("criteria", "")))
+        return {"name": name, "type": "noul", "statement": statement}
     criteria = q.get("criteria", {}) or {}
+    if "criteria" not in q and isinstance(q.get("options"), list):
+        # SGLang shape: options are [{"name": ...}] or bare strings.
+        criteria = {}
+        for opt in q["options"]:
+            if isinstance(opt, dict):
+                label, desc = opt.get("name"), opt.get("description")
+            else:
+                label, desc = opt, None
+            if isinstance(label, str) and label and label not in criteria:
+                criteria[label] = desc
     options = list(criteria.keys())
     prompt_bits = [_render_instructions(q.get("instructions"))]
+    if q.get("question") and "criteria" not in q:
+        # SGLang shape carries the prompt as "question".
+        prompt_bits.append(str(q["question"]))
     prompt_bits.append(
         "Options:\n" + "\n".join(_render_criterion(k, v) for k, v in criteria.items())
     )
@@ -885,13 +917,26 @@ def state_to_text(state: Any) -> str:
 
 
 def translate_body(body: Dict[str, Any]) -> tuple[str, List[Dict[str, Any]]]:
-    """Split a TypeSafe request into (state_text, systemone questions)."""
+    """Split a TypeSafe request into (state_text, systemone questions).
+
+    Accepts questions as a dict keyed by id (TypeSafe / SGLang style) or as
+    a list of question mappings carrying "id" (or "name").
+    """
     state_text = state_to_text(body.get("state", ""))
     if len(state_text) > MAX_STATE_CHARS:
         state_text = state_text[:MAX_STATE_CHARS]
+    raw = body.get("questions") or {}
+    if isinstance(raw, list):
+        items = [
+            (str(q.get("id") or q.get("name") or f"q{i}"), q)
+            for i, q in enumerate(raw)
+            if isinstance(q, dict)
+        ]
+    else:
+        items = list(raw.items())
     questions = [
         translate_question(name, q)
-        for name, q in (body.get("questions") or {}).items()
+        for name, q in items
     ]
     if not questions:
         raise ValueError("request must include at least one question")
@@ -925,6 +970,187 @@ def translate_answers(answers: Dict[str, Any]) -> Dict[str, Any]:
                 "probability": ans["probability"],
                 "answer": ans["answer"],
                 "confidence": ans["confidence"],
+            }
+    return out
+
+
+# -- SGLang /v1/decisions compatibility --------------------------------------
+#
+# SGLang (nightly, post-2026-09-29 main) serves POST /v1/decisions: batched
+# typed questions (choice / score / yes_no) answered with zero completion
+# tokens. This shim answers the same dialect with the local engine, so any
+# client written against SGLang works unchanged against this box.
+#
+# Version status (verified 2026-09-30): the endpoints are main-branch only,
+# not in any tagged SGLang release (newest PyPI was 0.5.20) — pin a nightly
+# build until a release contains them. Image input is undocumented upstream
+# (input is string | object | array, rendered as compact JSON — the
+# Pokemon demo's "live game state" was structured data, not screenshots),
+# so image parts are noted and skipped here; SGLangBackend marks images=
+# experimental until proven against a live nightly server.
+
+
+def _option_names(options: Any) -> List[str]:
+    """SGLang option items: [{"name": str}] or bare strings -> [str]."""
+    names: List[str] = []
+    for o in options or []:
+        if isinstance(o, dict):
+            names.append(str(o.get("name", o)))
+        else:
+            names.append(str(o))
+    return names
+
+
+class Unprocessable(ValueError):
+    """422: the request was well-formed JSON but violates endpoint limits
+    (mirrors SGLang's /v1/decisions, which answers 422 on invalid bodies)."""
+
+
+def decisions_input_to_text(state_input: Any) -> str:
+    """SGLang /v1/decisions `input` -> plain text for the local engine.
+
+    Accepts a string, or OpenAI-style content parts
+    ({"type": "text", "text": ...}, {"type": "image_url", ...}). Image
+    parts are noted and skipped — the local GLiClass engine is text-only,
+    and SGLang's decisions docs describe no image path (experimental in
+    SGLangBackend; verify against a live nightly server).
+    """
+    if state_input is None:
+        return ""
+    if isinstance(state_input, str):
+        return state_input
+    if isinstance(state_input, list):
+        texts = []
+        skipped_images = 0
+        for part in state_input:
+            if not isinstance(part, dict):
+                texts.append(str(part))
+                continue
+            ptype = part.get("type")
+            if ptype == "text":
+                texts.append(str(part.get("text", "")))
+            elif ptype == "image_url":
+                skipped_images += 1
+            else:
+                texts.append(str(part))
+        text = "\n".join(t for t in texts if t).strip()
+        if skipped_images and not text:
+            raise Unprocessable(
+                "input contained only image parts; the local engine is "
+                "text-only (use SGLangBackend with a VLM for images)"
+            )
+        return text
+    return state_to_text(state_input)
+
+
+# SGLang's documented /v1/decisions limits; the local endpoint mirrors them
+# so clients get the same contract whichever server they point at.
+_DECISIONS_MAX_CHOICE_OPTIONS = 26
+_DECISIONS_MIN_CHOICE_OPTIONS = 2
+_DECISIONS_MAX_SCORE_LEVELS = 10
+_DECISIONS_MIN_SCORE_LEVELS = 2
+
+
+def translate_decisions_body(
+    body: Dict[str, Any],
+) -> tuple[str, List[Dict[str, Any]], List[str]]:
+    """SGLang /v1/decisions body -> (state_text, engine questions, id order).
+
+    {"input": str|parts,
+     "questions": [{"id", "type": "choice"|"score"|"yes_no",
+                    "question": str,
+                    "options": [{"name"}...] | [str...] (choice),
+                    "levels": [{"name"}...] | [str...] (score)}]}
+    """
+    state_text = decisions_input_to_text(body.get("input", ""))
+    if len(state_text) > MAX_STATE_CHARS:
+        state_text = state_text[:MAX_STATE_CHARS]
+    raw_questions = body.get("questions")
+    if not isinstance(raw_questions, list) or not raw_questions:
+        raise Unprocessable("'questions' must be a non-empty list")
+    questions: List[Dict[str, Any]] = []
+    ids: List[str] = []
+    for i, rq in enumerate(raw_questions):
+        if not isinstance(rq, dict):
+            raise Unprocessable(f"question #{i} must be a mapping")
+        qid = str(rq.get("id") or rq.get("name") or f"q{i}")
+        if qid in ids:
+            raise Unprocessable(f"duplicate question id: {qid!r}")
+        ids.append(qid)
+        qtype = rq.get("type", "choice")
+        prompt = rq.get("question") or ""
+        if qtype == "choice":
+            options = _option_names(rq.get("options"))
+            if not (_DECISIONS_MIN_CHOICE_OPTIONS
+                    <= len(options) <= _DECISIONS_MAX_CHOICE_OPTIONS):
+                raise Unprocessable(
+                    f"choice question {qid!r} has {len(options)} options; "
+                    f"expected {_DECISIONS_MIN_CHOICE_OPTIONS}-"
+                    f"{_DECISIONS_MAX_CHOICE_OPTIONS}"
+                )
+            questions.append({"name": qid, "type": "choice",
+                              "options": options, "prompt": prompt})
+        elif qtype == "score":
+            levels = _option_names(rq.get("levels"))
+            if not (_DECISIONS_MIN_SCORE_LEVELS
+                    <= len(levels) <= _DECISIONS_MAX_SCORE_LEVELS):
+                raise Unprocessable(
+                    f"score question {qid!r} has {len(levels)} levels; "
+                    f"expected {_DECISIONS_MIN_SCORE_LEVELS}-"
+                    f"{_DECISIONS_MAX_SCORE_LEVELS}"
+                )
+            questions.append({"name": qid, "type": "score",
+                              "levels": levels, "prompt": prompt})
+        elif qtype == "yes_no":
+            if not prompt:
+                raise Unprocessable(
+                    f"yes_no question {qid!r} needs a 'question' string")
+            questions.append({"name": qid, "type": "noul", "statement": prompt})
+        else:
+            raise Unprocessable(
+                f"question {qid!r} has unknown type {qtype!r}; "
+                "expected one of: choice, score, yes_no")
+    return state_text, questions, ids
+
+
+def translate_decisions_answers(
+    answers: Dict[str, Any], ids: List[str]
+) -> Dict[str, Any]:
+    """Engine answers -> SGLang /v1/decisions {"answers": {id: {...}}}.
+
+    The local engine has no label-mass signal (that is an SGLang serving
+    concept), so "label_mass" is null here — the key stays for shape
+    compatibility with SGLang clients.
+    """
+    out: Dict[str, Any] = {}
+    for qid in ids:
+        ans = answers.get(qid)
+        if not isinstance(ans, dict):
+            continue
+        atype = ans.get("type")
+        if atype == "choice":
+            out[qid] = {
+                "type": "choice",
+                "choice": ans["choice"],
+                "probabilities": ans["probabilities"],
+                "label_mass": None,
+            }
+        elif atype == "score":
+            dist = ans["distribution"]
+            levels = list(dist.keys())
+            wmean = sum(i * float(dist[lv]) for i, lv in enumerate(levels))
+            out[qid] = {
+                "type": "score",
+                "score": wmean,
+                "probabilities": dist,
+                "label_mass": None,
+            }
+        elif atype == "noul":
+            out[qid] = {
+                "type": "yes_no",
+                "probability": ans["probability"],
+                "answer": ans["answer"],
+                "label_mass": None,
             }
     return out
 
@@ -1227,6 +1453,29 @@ class ShimHandler(BaseHTTPRequestHandler):
             "latency_ms": answers.get("_meta", {}).get("latency_ms"),
         }
 
+    def _handle_decisions(self) -> tuple[int, Dict[str, Any]]:
+        """POST /v1/decisions -> (status, payload).
+
+        SGLang's /v1/decisions request/response dialect, served by the local
+        engine: one POST carries the state plus N typed questions and they
+        are answered in a single batched pass. Lets clients written against
+        SGLang work unchanged against this box (label_mass is null here —
+        that signal only exists on a real SGLang server; see
+        systemone/sglang_backend.py).
+        """
+        body = self._read_body()
+        try:
+            state_text, questions, ids = translate_decisions_body(body)
+        except Unprocessable as e:
+            return 422, {"error": f"unprocessable: {e}"}
+        answers = self.server.engine.systemone(state_text, questions)
+        return 200, {
+            "answers": translate_decisions_answers(answers, ids),
+            "model": self.server.engine.model_name,
+            "usage": {},
+            "latency_ms": answers.get("_meta", {}).get("latency_ms"),
+        }
+
     def _scoring_ctx(self) -> Dict[str, Any]:
         return {
             "calibration": getattr(self.server, "calibration", None),
@@ -1393,6 +1642,9 @@ class ShimHandler(BaseHTTPRequestHandler):
             elif self.path == "/v1/systemone":
                 status, payload = self._handle_systemone()
                 extra = {"n_questions": len(payload.get("answers", {}))}
+            elif self.path == "/v1/decisions":
+                status, payload = self._handle_decisions()
+                extra = {"n_questions": len(payload.get("answers", {}))}
             elif self.path == "/v1/systemone/route":
                 status, payload = self._handle_route()
                 route = payload.get("route", {})
@@ -1416,7 +1668,7 @@ class ShimHandler(BaseHTTPRequestHandler):
             else:
                 status = 404
                 payload = {
-                    "error": "not found, POST /v1/systemone, "
+                    "error": "not found, POST /v1/decisions, /v1/systemone, "
                              "/v1/systemone/route, /v1/systemone/rank-plans "
                              "or /v1/systemone/decide"
                 }
