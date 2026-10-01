@@ -319,6 +319,25 @@ and per family, mean latency, and per-item native probability distributions
 See `systemone/jevbench.py` (`score_item` / `run_file`); registering upstream
 would vendor that mapping into `jevbench/adapters/`.
 
+## Beyond GLiClass: the backend lineup
+
+GLiClass is the default local engine, not the ceiling. Measured on
+JevBench's public splits (Oct 2026, this repo's adapter) and the public
+JevBench board:
+
+| backend | what | evidence |
+|---|---|---|
+| `local` (GLiClass edge/small/base) | default torch engine, one batched pass | baseline; runs anywhere with torch |
+| sidecar (decider-4b v2.1) | `:8079` decision backend behind `/v1/systemone/decide` | JevBench #3 overall (64.13, ahead of Jev 1.13 at 63.29) |
+| `sglang` | Qwen-class judges via SGLang `/v1/decisions` | 27B-class reasoning; sub-100 ms served |
+| `jevk5` | JevK5 open weights (Apache-2.0) via `jevk5-serve` | JevBench #5 (62.04), 1st fully open |
+| `onnx` | ONNX cross-encoder rerank judge, CPU-only, no torch | easy 81.2% @ ~22 ms, hard 35.1%, original 36.1% (BGE-base int8, Apple Silicon CPU) |
+
+The ONNX judge is the honest CPU fallback: strong on easy-tier routing-style
+items, weak on hard items next to 4B+ purpose-built judges — pick the
+backend your hardware earns. `HybridBackend` (local-first, SGLang
+escalation) composes cheap + smart when a big judge is reachable.
+
 ## SGLang interop
 
 SystemOne speaks both sides of SGLang's decision API, and SGLang is now a
@@ -330,13 +349,16 @@ you select (`--engine` flag overrides the env var):
 
 | setting | behavior |
 |---|---|
-| `auto` (default) | SGLang when `SGLANG_BASE_URL` is set and the server answers a health probe, else the local GLiClass engine. No probe runs unless `SGLANG_BASE_URL` is explicit, so a default box never stalls at startup. |
+| `auto` (default) | SGLang when `SGLANG_BASE_URL` is set and healthy, else JevK5 when `JEVK5_BASE_URL` is set and healthy, else the local GLiClass engine. Probes only run for explicitly configured servers, so a default box never stalls at startup. |
 | `local` | Always the GLiClass engine. Needs `pip install 'systemone[local]'`. |
 | `sglang` | Always SGLang. Unreachable → fails open to local when available, else a clear error. |
+| `jevk5` | Always a JevK5 server (`jevk5-serve`'s `/v1/systemone`). Same fail-open behavior as `sglang`. |
+| `onnx` | Always the local ONNX cross-encoder judge (default Xenova/bge-reranker-base int8; `RERANK_MODEL_ID` / `RERANK_ONNX_FILE` / `RERANK_REVISION` override). Needs `onnxruntime` + `tokenizers` + `huggingface_hub`. Never auto-selected (it downloads weights). |
 
 `GET /healthz` reports the live choice (`{"ok": true, "model": ...,
-"backend": "sglang"|"hybrid"|"local"|"custom"}`), and `systemone status`
-prints it. Every failure path stays fail-open, per the house rule.
+"backend": "sglang"|"hybrid"|"jevk5"|"rerank"|"local"|"custom"}`), and
+`systemone status` prints it. Every failure path stays fail-open, per the
+house rule.
 `GET /openapi.json` serves the machine-readable API spec
 (`systemone/openapi.json`, covered by a live parity test).
 

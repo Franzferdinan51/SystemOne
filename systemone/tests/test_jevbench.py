@@ -87,6 +87,21 @@ def test_score_item_noul_correct_and_wrong():
     assert res.probs_source == "native"
 
 
+def test_item_to_body_score_description_lists():
+    item = {
+        "id": "s", "family": "f", "labels": ["0", "1"],
+        "question": {"type": "score", "instructions": "Count.",
+                     "criteria": ["none", "some"]},
+        "expected": "1", "state": "s",
+        "provenance": {},
+    }
+    body = item_to_body(item)
+    q = body["questions"]["decision"]
+    assert q["criteria"] == ["0", "1"]  # labels become the levels
+    assert "0: none" in q["instructions"] and "Count." in q["instructions"]
+    assert "expected" not in json.dumps(body)
+
+
 def test_score_item_choice_and_score():
     choice = _item(qtype="choice", expected="a", labels=("a", "b"))
     res = score_item(choice, StubEngine(first=True))

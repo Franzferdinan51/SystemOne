@@ -84,6 +84,26 @@ def test_translate_question_string_instructions():
     assert "Just pick." in q["prompt"]
 
 
+def test_translate_question_score_list_criteria():
+    # TypeSafe score shape: criteria IS the ordered level list (regression:
+    # this used to crash with AttributeError -> HTTP 500 on /v1/systemone).
+    q = translate_question("sev", {"type": "score",
+                                   "criteria": ["low", "high"],
+                                   "instructions": "Rate it."})
+    assert q["type"] == "score"
+    assert q["levels"] == ["low", "high"]
+    assert "Rate it." in q["prompt"]
+
+
+def test_translate_question_rejects_non_object_criteria():
+    try:
+        translate_question("op", {"type": "choice", "criteria": 42})
+    except ValueError as exc:
+        assert "criteria" in str(exc)
+    else:
+        raise AssertionError("expected ValueError for numeric criteria")
+
+
 def test_state_to_text_dict():
     text = state_to_text(_typesafe_body()["state"])
     assert "https://example.com/checkout" in text

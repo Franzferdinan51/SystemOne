@@ -27,6 +27,8 @@ the modules.
 | `tune.py` | stdlib | `make_training_json()` + `tune()` domain fine-tuning wrappers |
 | `battery/` | stdlib | regression battery runner + temperature fitting |
 | `jevbench.py` | stdlib + numpy | JevBench-split scoring adapter (`score_item`, `run_file`, `DecisionResult`); CLI: `systemone jevbench --items` |
+| `jevk5_backend.py` | stdlib + numpy | `JevK5ServerBackend`: judge via `jevk5-serve`'s `/v1/systemone` (`JEVK5_BASE_URL`) |
+| `rerank_backend.py` | stdlib + numpy (+ onnxruntime for `OnnxCrossEncoder`) | `RerankBackend`: cross-encoder judge over any score fn; `OnnxCrossEncoder`: CPU ONNX cross-encoder |
 | `bench_2048.py` | varies | headless 2048 decision-loop benchmark (see docstring for limits) |
 | `tests/` | `pytest` (+ local for heavy tests) | suite: `pytest systemone/tests` runs green on a slim install; torch-only tests skip with a reason |
 | `examples/` | varies | runnable demos; SGLang/stub-capable ones import clean on slim |

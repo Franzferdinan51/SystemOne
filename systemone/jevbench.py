@@ -64,16 +64,29 @@ class DecisionResult:
 def item_to_body(item: Dict[str, Any]) -> Dict[str, Any]:
     """JevBench item -> TypeSafe-dialect request body (no expected leakage).
 
-    The question key is fixed ('decision'); labels and the expected answer
-    never appear in the request.
+    The question key is fixed ('decision'); the expected answer never
+    appears in the request. Labels appear only as the answer vocabulary
+    the judge must choose among (options/levels), never as the answer.
+
+    Score items whose criteria list holds level *descriptions* get their
+    labels as the level names, with descriptions folded into the
+    instructions — otherwise bare level names ("0".."3") carry no
+    meaning for the judge.
     """
     question = item.get("question") or {}
-    q: Dict[str, Any] = {
-        "type": question.get("type"),
-        "instructions": question.get("instructions"),
-    }
-    if question.get("criteria") is not None:
-        q["criteria"] = question["criteria"]
+    qtype = question.get("type")
+    instructions = question.get("instructions")
+    criteria = question.get("criteria")
+    if qtype == "score" and isinstance(criteria, list):
+        labels = item.get("labels") or []
+        if labels and len(labels) == len(criteria):
+            descs = "\n".join(f"{lab}: {c}" for lab, c in zip(labels, criteria))
+            level_block = f"Levels:\n{descs}"
+            instructions = f"{instructions}\n{level_block}" if instructions else level_block
+            criteria = list(labels)
+    q: Dict[str, Any] = {"type": qtype, "instructions": instructions}
+    if criteria is not None:
+        q["criteria"] = criteria
     return {"state": item.get("state"), "questions": {"decision": q}}
 
 

@@ -76,6 +76,8 @@ from .patterns import (
     validate_distribution,
     with_abstain,
 )
+from .jevk5_backend import JevK5Error, JevK5ServerBackend
+from .rerank_backend import OnnxCrossEncoder, RerankBackend
 from .sglang_backend import HybridBackend, SGLangBackend, SGLangError
 
 __all__ = [
@@ -84,6 +86,10 @@ __all__ = [
     "SGLangBackend",
     "SGLangError",
     "HybridBackend",
+    "JevK5ServerBackend",
+    "JevK5Error",
+    "RerankBackend",
+    "OnnxCrossEncoder",
     "MAX_STATE_CHARS",
     "ABSTAIN_LABEL",
     "LatencyStats",

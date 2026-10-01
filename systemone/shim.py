@@ -117,6 +117,8 @@ except ImportError:  # slim install (no torch/gliclass): SGLang-engine or
     SystemOne = None  # type: ignore[assignment,misc]
 
 
+from .jevk5_backend import JevK5ServerBackend
+from .rerank_backend import OnnxCrossEncoder, RerankBackend
 from .sglang_backend import HybridBackend, SGLangBackend
 from .scoring import (
     apply_calibration,
@@ -866,6 +868,11 @@ def translate_question(name: str, q: Dict[str, Any]) -> Dict[str, Any]:
                 label, desc = opt, None
             if isinstance(label, str) and label and label not in criteria:
                 criteria[label] = desc
+    if isinstance(criteria, list):
+        # TypeSafe score shape: criteria IS the ordered level list.
+        criteria = {str(x): None for x in criteria}
+    if not isinstance(criteria, dict):
+        raise ValueError("question criteria must be an object or a list")
     options = list(criteria.keys())
     prompt_bits = [_render_instructions(q.get("instructions"))]
     if q.get("question") and "criteria" not in q:
@@ -880,7 +887,15 @@ def translate_question(name: str, q: Dict[str, Any]) -> Dict[str, Any]:
     if qtype == "noul":
         statement = prompt or str(criteria)
         return {"name": name, "type": "noul", "statement": statement}
-    return {"name": name, "type": "choice", "options": options, "prompt": prompt}
+    out: Dict[str, Any] = {"name": name, "type": "choice", "options": options,
+                           "prompt": prompt}
+    descs = {k: v for k, v in criteria.items()
+             if isinstance(v, str) and v.strip()}
+    if descs:
+        # Per-option descriptions for judges that score option text
+        # (RerankBackend); GLiClass/SGLang paths ignore this key.
+        out["descriptions"] = descs
+    return out
 
 
 def state_to_text(state: Any) -> str:
@@ -1763,7 +1778,7 @@ def _win32_detach(argv: list[str]) -> bool:
 # -- baked-in engine selection (local GLiClass vs SGLang) --------------------
 
 ENGINE_ENV = "SYSTEMONE_ENGINE"
-ENGINE_CHOICES = ("auto", "local", "sglang")
+ENGINE_CHOICES = ("auto", "local", "sglang", "jevk5", "onnx")
 
 
 def engine_backend_name(engine: Any) -> str:
@@ -1777,6 +1792,10 @@ def engine_backend_name(engine: Any) -> str:
         return "hybrid"
     if isinstance(engine, SGLangBackend):
         return "sglang"
+    if isinstance(engine, JevK5ServerBackend):
+        return "jevk5"
+    if isinstance(engine, RerankBackend):
+        return "rerank"
     if SystemOne is not None and isinstance(engine, SystemOne):
         return "local"
     if type(engine).__name__ == "SystemOne":
@@ -1788,23 +1807,31 @@ def create_engine(name: str | None = None) -> Any:
     """Build the decision engine the shim serves.
 
     Args:
-        name: "auto" (default) | "local" | "sglang". Unset -> the
-            SYSTEMONE_ENGINE env var, defaulting to "auto".
+        name: "auto" (default) | "local" | "sglang" | "jevk5" | "onnx".
+            Unset -> the SYSTEMONE_ENGINE env var, defaulting to "auto".
 
-    - auto: SGLang when SGLANG_BASE_URL is set and the server answers a
-      health probe, else the local GLiClass engine. The probe only runs
-      when SGLANG_BASE_URL is explicit, so a default box never stalls at
-      startup waiting on a server that was never configured.
+    - auto: SGLang when SGLANG_BASE_URL is set and healthy, else JevK5
+      when JEVK5_BASE_URL is set and healthy, else the local GLiClass
+      engine. Probes only run for explicitly configured servers, so a
+      default box never stalls at startup.
     - local: the GLiClass engine. Needs torch/transformers/gliclass
       (pip install 'systemone[local]').
     - sglang: SGLangBackend. When the server is unreachable it fails open
       to the local engine if one can be built, else raises SGLangError.
+    - jevk5: JevK5ServerBackend (jevk5-serve's /v1/systemone). Same
+      fail-open behavior as sglang.
+    - onnx: RerankBackend over an ONNX cross-encoder (default
+      Xenova/bge-reranker-base int8, override with RERANK_MODEL_ID /
+      RERANK_ONNX_FILE). Needs onnxruntime + tokenizers +
+      huggingface_hub. Never auto-selected (it downloads weights).
 
     Raises:
         ValueError: unknown engine name.
-        SGLangError: sglang requested but unreachable and no local fallback.
+        SGLangError / JevK5Error: remote requested but unreachable and no
+            local fallback.
         ImportError: local requested but the heavy deps are not installed.
     """
+    from .jevk5_backend import JevK5Error
     from .sglang_backend import SGLangError
 
     sel = (name or os.environ.get(ENGINE_ENV) or "auto").strip().lower()
@@ -1819,41 +1846,65 @@ def create_engine(name: str | None = None) -> Any:
             raise ImportError(
                 "the local GLiClass engine needs torch + transformers + "
                 "gliclass, which are not installed. Either install them "
-                "(pip install 'systemone[local]') or serve SGLang instead "
-                "(SYSTEMONE_ENGINE=sglang with SGLANG_BASE_URL set)."
+                "(pip install 'systemone[local]') or serve a remote engine "
+                "instead (SYSTEMONE_ENGINE=sglang|jevk5 with its base URL "
+                "set) or the ONNX judge (SYSTEMONE_ENGINE=onnx with "
+                "onnxruntime installed)."
             )
         return SystemOne(model_name=os.environ.get("SYSTEMONE_MODEL"))
 
-    if sel == "local":
-        return _local()
-    sglang_configured = bool((os.environ.get("SGLANG_BASE_URL") or "").strip())
-    if sel == "sglang" or sglang_configured:
-        backend = SGLangBackend()
+    def _remote(kind: str, build: Any, err_cls: Any, env_var: str) -> Any:
+        backend = build()
         try:
             healthy = backend.health()
         except Exception:
             healthy = False
         if healthy:
             return backend
-        if sel == "sglang":
+        if sel == kind:
             if SystemOne is not None:
                 logging.warning(
-                    "SGLang server unreachable at %s; failing open to the "
+                    "%s server unreachable at %s; failing open to the "
                     "local engine",
-                    backend.base_url,
+                    kind, backend.base_url,
                 )
                 return _local()
-            raise SGLangError(
-                "could not reach the SGLang server and no local engine "
+            raise err_cls(
+                f"could not reach the {kind} server and no local engine "
                 "is available",
-                hint=f"tried {backend.base_url} (set SGLANG_BASE_URL); "
+                hint=f"tried {backend.base_url} (set {env_var}); "
                 "slim install has no local fallback — pip install "
                 "'systemone[local]' to add one",
             )
         logging.warning(
-            "SGLang server unreachable at %s; failing open to the local engine",
-            backend.base_url,
+            "%s server unreachable at %s; failing open onward",
+            kind, backend.base_url,
         )
+        return None
+
+    if sel == "local":
+        return _local()
+    if sel == "onnx":
+        try:
+            enc = OnnxCrossEncoder(
+                model_id=os.environ.get("RERANK_MODEL_ID") or "Xenova/bge-reranker-base",
+                filename=os.environ.get("RERANK_ONNX_FILE") or "onnx/model_int8.onnx",
+            )
+        except Exception as exc:
+            if SystemOne is not None:
+                logging.warning(
+                    "ONNX judge unavailable (%s); failing open to local", exc)
+                return _local()
+            raise
+        return RerankBackend(enc.score, model_name=enc.model_id + " [onnx]")
+    if sel == "sglang" or (os.environ.get("SGLANG_BASE_URL") or "").strip():
+        found = _remote("sglang", SGLangBackend, SGLangError, "SGLANG_BASE_URL")
+        if found is not None:
+            return found
+    if sel == "jevk5" or (os.environ.get("JEVK5_BASE_URL") or "").strip():
+        found = _remote("jevk5", JevK5ServerBackend, JevK5Error, "JEVK5_BASE_URL")
+        if found is not None:
+            return found
     return _local()
 
 
@@ -1932,10 +1983,10 @@ def main() -> None:
         choices=list(ENGINE_CHOICES),
         default=None,
         help=(
-            "decision engine to serve: auto (SGLang when SGLANG_BASE_URL "
-            "is set and healthy, else local), local (GLiClass), or sglang "
-            "(fail-open to local when unreachable). Default: "
-            "$SYSTEMONE_ENGINE or auto."
+            "decision engine to serve: auto (SGLang, then JevK5, then "
+            "local), local (GLiClass), sglang, jevk5, or onnx (local "
+            "ONNX cross-encoder judge). Remotes fail open to local when "
+            "unreachable. Default: $SYSTEMONE_ENGINE or auto."
         ),
     )
     parser.add_argument(
