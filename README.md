@@ -755,19 +755,8 @@ start), launched via `C:\Users\Duckets\bin\start-shim.bat`
 
 
 (The shim defaults to `SYSTEMONE_JEFF1_URL=http://127.0.0.1:8079`, so a
-shim on the same box as the sidecar needs no extra config.)
-
-Mac mini (shim only), user-level env:
-
-```bash
-export SYSTEMONE_JEFF1_URL=http://100.115.6.113:8079   # the PC's Tailscale IP
-python3.11 -m systemone.shim --port 8765
-```
-
-`100.115.6.113` is the Windows PC's (Batman) Tailscale IP; the sidecar
-binds `0.0.0.0` on the PC so the Mac's shim reaches it over the tailnet.
-The old Mac-side sidecar launchd job (`com.askone.jeff1`) was removed
-when the sidecar moved to the PC — don't revive it.
+shim on the same box as the sidecar needs no extra config. The shim does
+not run on the Mac mini anymore — Windows PC only.)
 
 ### (b) Single-device (one box does everything)
 
