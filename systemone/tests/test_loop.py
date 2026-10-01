@@ -43,8 +43,9 @@ class ScriptEnv:
 
 
 def _judge(choice="right", conf=0.9, mass=None):
-    def judge(state_text, questions, images):
+    def judge(state_text, questions, images, videos):
         assert isinstance(state_text, str) and state_text
+        assert isinstance(images, list) and isinstance(videos, list)
         return _answers(choice, conf, mass)
     return judge
 
@@ -145,6 +146,21 @@ def test_state_text_prefix_cache_shape():
     text = loop.build_state_text(["m1", "m2", "m3"], "OBS", 7)
     assert text.startswith("SYS\n\nMemory (compressed turns):\nm2\nm3\n\n")
     assert text.endswith("Tick 7 — current observation:\nOBS")
+
+
+def test_videos_reach_judge():
+    seen = []
+
+    def judge(state_text, questions, images, videos):
+        seen.append((images, videos))
+        return _answers()
+
+    class VidEnv(ScriptEnv):
+        def observe(self):
+            return Observation(text="clip", videos=["https://e.com/v.mp4"])
+
+    run_loop(VidEnv([(True, True)]), judge, _questions(), budget=2)
+    assert seen[0] == ([], ["https://e.com/v.mp4"])
 
 
 def test_step_records_telemetry():

@@ -121,7 +121,8 @@ class JevK5ServerBackend:
             validate_distribution(dist, list(dist), level)
             return {"type": "score", "level": level, "distribution": dist,
                     "score": sum(i * p for i, p in enumerate(dist.values())),
-                    "confidence": score_confidence(list(dist.values()))}
+                    "confidence": score_confidence(list(dist.values())),
+                    "legend": dict(answer.get("legend") or {})}
         # noul: JevK5 answers carry "noul" = P(true).
         try:
             p = float(answer.get("noul", answer.get("probability", 0.5)))
@@ -135,15 +136,22 @@ class JevK5ServerBackend:
         self,
         state: str,
         questions: Sequence[Dict[str, Any]],
+        images: Sequence[Any] | None = None,
+        videos: Sequence[Any] | None = None,
     ) -> Dict[str, Any]:
+        """Answer via the server's /v1/systemone, forwarding Clef media."""
         if isinstance(state, str) and len(state) > 6000:
             state = state[:6000]
-        payload = {
+        payload: Dict[str, Any] = {
             "model": self.model_name,
             "state": state,
             "questions": {q.get("name", f"q{i}"): self._to_typesafe(q)
                           for i, q in enumerate(questions)},
         }
+        if images:
+            payload["images"] = list(images)
+        if videos:
+            payload["videos"] = list(videos)
         types = {q.get("name", f"q{i}"): q.get("type")
                  for i, q in enumerate(questions)}
         req = urllib.request.Request(

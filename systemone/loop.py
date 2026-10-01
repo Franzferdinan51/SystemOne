@@ -24,9 +24,9 @@ should reimplement:
 - :class:`StallGuard` progress tracking with early stop.
 
 Judges are backend-agnostic callables
-``(state_text, questions, images) -> answers`` returning api-shaped
-answers (see ``examples/demo_decision_loop.py`` for the stub and engine
-judges). Environments implement :class:`Env`.
+``(state_text, questions, images, videos) -> answers`` returning
+api-shaped answers (see ``examples/demo_decision_loop.py`` for the stub
+and engine judges). Environments implement :class:`Env`.
 """
 
 from __future__ import annotations
@@ -41,6 +41,7 @@ class Observation:
 
     text: str
     images: Sequence[Any] = ()
+    videos: Sequence[Any] = ()
     done: bool = False
     info: Dict[str, Any] = field(default_factory=dict)
 
@@ -99,8 +100,9 @@ class DecisionLoop:
     """See > Decide > Act over any :class:`Env` with any judge.
 
     Args:
-        judge: ``(state_text, questions, images) -> answers`` in api
-            shapes (``{name: {choice/confidence/...}, "_meta": {...}}``).
+        judge: ``(state_text, questions, images, videos) -> answers`` in
+            api shapes (``{name: {choice/confidence/...}, "_meta":
+            {...}}``).
         action_name: which question's choice is the action.
         uncertainty_action: safe fallback when the gate trips.
         confidence_floor: below this, act ``uncertainty_action``.
@@ -159,7 +161,8 @@ class DecisionLoop:
             obs = env.observe()  # SEE
             state_text = self.build_state_text(memory, obs.text, tick)
             answers = self.judge(
-                state_text, list(questions), list(obs.images or [])
+                state_text, list(questions), list(obs.images or []),
+                list(obs.videos or []),
             )  # DECIDE
             meta = answers.get("_meta", {}) if isinstance(answers, dict) else {}
 

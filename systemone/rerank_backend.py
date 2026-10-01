@@ -90,7 +90,15 @@ class RerankBackend:
         self,
         state: str,
         questions: Sequence[Dict[str, Any]],
+        images: Sequence[Any] | None = None,
+        videos: Sequence[Any] | None = None,
     ) -> Dict[str, Any]:
+        """Answer typed questions; media is noted and skipped (text-only).
+
+        `images` / `videos` are accepted for protocol uniformity and
+        reported in ``_meta["media_dropped"]`` — the cross-encoder reads
+        text pairs only.
+        """
         from .patterns import validate_choice, validate_distribution
 
         t0 = time.perf_counter()
@@ -132,6 +140,7 @@ class RerankBackend:
                     "distribution": dist,
                     "score": sum(i * p for i, p in enumerate(dist_list)),
                     "confidence": self._score_confidence(dist_list),
+                    "legend": dict(q.get("legend") or {}),
                 }
             elif qtype == "noul":
                 statement = q.get("statement") or q.get("prompt") or name
@@ -148,6 +157,11 @@ class RerankBackend:
             "backend": "rerank",
             "latency_ms": round((time.perf_counter() - t0) * 1000.0, 1),
         }
+        if images or videos:
+            answers["_meta"]["media_dropped"] = {
+                "images": len(list(images or [])),
+                "videos": len(list(videos or [])),
+            }
         return answers
 
 

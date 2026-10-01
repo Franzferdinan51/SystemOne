@@ -171,7 +171,7 @@ def test_http_roundtrip_with_stub_engine():
         assert op["choice"] == "CLICK"
         assert abs(sum(op["probabilities"].values()) - 1.0) < 1e-9
         assert payload["model"] == "stub"
-        assert payload["usage"] == {}
+        assert payload["usage"] == {"output_tokens": 0}
 
         with urllib.request.urlopen(f"http://127.0.0.1:{port}/healthz", timeout=10) as resp:
             assert json.loads(resp.read())["ok"] is True

@@ -75,6 +75,11 @@ into shipping products:
   onto it. See [JEV decision
   models](#jev-decision-models-systemone_enginejev) and [The agent
   loop](#the-agent-loop-see--decide--act).
+- **Clef schema compatibility** — `/v1/systemone` accepts Clef's
+  `images`/`videos`/`media_kwargs`, returns score `legend`s, the `noul`
+  P(true) alias, and `usage.output_tokens = 0`; all engines share one
+  `images=`/`videos=` protocol with honest drop reporting. See [Clef
+  compatibility](#clef-compatibility-cloudflareclef).
 
 ## Map to Jev's primitives
 
@@ -398,6 +403,38 @@ curl localhost:8765/v1/decide -H 'Content-Type: application/json' -d '{
   "question": "Which team should handle this?",
   "options": ["billing", "shipping", "tech support"]}'
 ```
+
+## Clef compatibility (`Cloudflare/clef`)
+
+[Clef](https://huggingface.co/Cloudflare/clef) (Apache-2.0) is a 27B
+multimodal decision model whose API is, in its own words, "fully
+compatible with Jev and SystemOne" — it consumes and produces our
+`POST /v1/systemone` shape. We pulled its schema extensions back into
+this box, so Clef clients and Clef servers interoperate with the shim in
+both directions:
+
+| Clef feature | status here |
+|---|---|
+| top-level `images` / `videos` request fields | accepted, validated, forwarded to engines that take them (`sglang`/`jev` consume images; `jevk5` forwards both to its server); anything dropped is reported in `media` + `warnings`, never silently |
+| `media_kwargs` | accepted as a validated mapping (reserved for processor-backed engines) |
+| score `legend` (level → description) | returned on every `/v1/systemone` score answer; engines propagate the request's legend, else identity |
+| `noul` = P(true) answer key | returned alongside `probability` (`jevk5_backend` already reads it) |
+| `usage: {output_tokens: 0}` (+ `input_tokens` when the engine counts) | returned on `/v1/systemone` — decisions take zero completion tokens |
+| optional `instructions` (question ID used when omitted) | implemented in question translation, incl. `noul` criteria descriptions for true/false |
+
+One deliberate difference: Clef score levels are always `"0".."n-1"`
+with descriptions in `legend`; our levels are the criteria labels
+themselves (descriptions in `legend`). The mapping info is identical —
+only the level IDs differ.
+
+Reference numbers from the Clef card (their Decision Index 0.2.1 run,
+for backend shopping): Clef beats Jev on BFCL (98.5 vs 95.8),
+BANKING77 (94.2 vs 79.7 F1), ToolRet, CRUXEval, and most agent/tool
+benchmarks, at 209 ms median latency (Clef-flash: 39 ms). Jev keeps the
+lead on reasoning-heavy MMLU-Pro/BBH/GPQA. Scoring this box on the
+[Decision Index](https://clef-evals.workers-ai-mle.workers.dev) suite is
+future work — our JevBench adapter (`systemone/jevbench.py`) is the
+template.
 
 ## The agent loop: See > Decide > Act
 

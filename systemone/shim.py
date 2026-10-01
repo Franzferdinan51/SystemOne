@@ -20,7 +20,9 @@ is the endpoint passed to `post_json`:
 Endpoints:
     POST /v1/systemone        TypeSafe dialect (see below); also accepts
                               SGLang's options-list question shape and
-                              yes_no questions, plus list-form questions
+                              yes_no questions, plus list-form questions;
+                              Clef's images/videos/media_kwargs, score
+                              legends, the noul key, and zero-token usage
     POST /v1/decisions        SGLang's /v1/decisions dialect (choice / score /
                               yes_no, label_mass), served by the local engine
                               — one call, N typed questions, single batched
@@ -853,6 +855,9 @@ def translate_question(name: str, q: Dict[str, Any]) -> Dict[str, Any]:
     and {"type": "yes_no", "question": "..."} -> noul. The two shapes are
     distinguished by the presence of "criteria" (TypeSafe) vs a list-valued
     "options" (SGLang).
+
+    instructions is optional (Clef convention): when it is absent the
+    question ID stands in, so judges always see what is being decided.
     """
     qtype = q.get("type", "choice")
     if qtype == "yes_no":
@@ -860,7 +865,8 @@ def translate_question(name: str, q: Dict[str, Any]) -> Dict[str, Any]:
         # dispatch below since there are no options to speak of.
         statement = (q.get("question")
                      or _render_instructions(q.get("instructions"))
-                     or str(q.get("criteria", "")))
+                     or str(q.get("criteria", ""))
+                     or name)
         return {"name": name, "type": "noul", "statement": statement}
     criteria = q.get("criteria", {}) or {}
     if "criteria" not in q and isinstance(q.get("options"), list):
@@ -879,16 +885,25 @@ def translate_question(name: str, q: Dict[str, Any]) -> Dict[str, Any]:
     if not isinstance(criteria, dict):
         raise ValueError("question criteria must be an object or a list")
     options = list(criteria.keys())
-    prompt_bits = [_render_instructions(q.get("instructions"))]
-    if q.get("question") and "criteria" not in q:
+    sglang_question = str(q.get("question") or "") if "criteria" not in q else ""
+    prompt_bits = [
+        _render_instructions(q.get("instructions"))
+        or sglang_question
+        or f"Question '{name}'."
+    ]
+    if sglang_question and sglang_question not in prompt_bits[0]:
         # SGLang shape carries the prompt as "question".
-        prompt_bits.append(str(q["question"]))
+        prompt_bits.append(sglang_question)
     prompt_bits.append(
         "Options:\n" + "\n".join(_render_criterion(k, v) for k, v in criteria.items())
     )
     prompt = "\n".join(b for b in prompt_bits if b).strip()
     if qtype == "score":
-        return {"name": name, "type": "score", "levels": options, "prompt": prompt}
+        return {"name": name, "type": "score", "levels": options,
+                "prompt": prompt,
+                "legend": {lv: (criteria[lv] if isinstance(criteria[lv], str)
+                                       and criteria[lv].strip() else lv)
+                           for lv in options}}
     if qtype == "noul":
         statement = prompt or str(criteria)
         return {"name": name, "type": "noul", "statement": statement}
@@ -947,6 +962,53 @@ def state_to_text(state: Any) -> str:
     return str(state)
 
 
+def translate_media(body: Dict[str, Any]) -> tuple[List[Any], List[Any]]:
+    """Clef media fields -> (images, videos).
+
+    Accepts Clef's top-level "images" / "videos" lists: over HTTP the items
+    are image/video URLs or data URLs (strings) or {"image"|"url": ...}
+    mappings; in-process callers may also pass frame arrays (lists).
+    "media_kwargs", when present, must be a mapping (reserved for
+    processor-backed engines; validated here, consumed downstream).
+    """
+    for key in ("images", "videos"):
+        raw = body.get(key, [])
+        if raw is None:
+            raw = []
+        if not isinstance(raw, list):
+            raise ValueError(f"'{key}' must be a list")
+        for i, item in enumerate(raw):
+            if isinstance(item, str) and item.strip():
+                continue  # URL / data URL
+            if isinstance(item, list):
+                continue  # frame array (in-process callers)
+            if isinstance(item, dict):
+                ref = item.get("image", item.get("url", ""))
+                if isinstance(ref, str) and ref.strip():
+                    continue
+                raise ValueError(
+                    f"'{key}[{i}]' mapping needs an 'image'/'url' string")
+            raise ValueError(
+                f"'{key}[{i}]' must be a URL/data-URL string, "
+                "an {'image'|'url': ...} mapping, or a frame array")
+    kwargs = body.get("media_kwargs", {})
+    if kwargs is None:
+        kwargs = {}
+    if not isinstance(kwargs, dict):
+        raise ValueError("'media_kwargs' must be a mapping")
+    return list(body.get("images") or []), list(body.get("videos") or [])
+
+
+def _engine_supports(engine: Any, param: str) -> bool:
+    """True when engine.systemone() accepts the `param` keyword."""
+    try:
+        import inspect
+
+        return param in inspect.signature(engine.systemone).parameters
+    except (TypeError, ValueError):
+        return False
+
+
 def translate_body(body: Dict[str, Any]) -> tuple[str, List[Dict[str, Any]]]:
     """Split a TypeSafe request into (state_text, systemone questions).
 
@@ -989,16 +1051,23 @@ def translate_answers(answers: Dict[str, Any]) -> Dict[str, Any]:
                 "confidence": ans["confidence"],
             }
         elif atype == "score":
+            dist = ans["distribution"]
             out[name] = {
                 "type": "score",
                 "level": ans["level"],
-                "distribution": ans["distribution"],
+                "distribution": dist,
                 "confidence": ans["confidence"],
+                # Clef legend: level -> description (identity when the
+                # engine was not given descriptions).
+                "legend": dict(ans.get("legend") or {lv: lv for lv in dist}),
             }
         elif atype == "noul":
             out[name] = {
                 "type": "noul",
                 "probability": ans["probability"],
+                # "noul" = P(true): the JevK5/Clef key; jevk5_backend
+                # already reads it, so round-trips preserve the value.
+                "noul": ans["probability"],
                 "answer": ans["answer"],
                 "confidence": ans["confidence"],
             }
@@ -1617,13 +1686,47 @@ class ShimHandler(BaseHTTPRequestHandler):
         """POST /v1/systemone -> (status, payload)."""
         body = self._read_body()
         state_text, questions = translate_body(body)
-        answers = self.server.engine.systemone(state_text, questions)
-        return 200, {
+        images, videos = translate_media(body)
+        engine = self.server.engine
+        kwargs: Dict[str, Any] = {}
+        if images and _engine_supports(engine, "images"):
+            kwargs["images"] = images
+        if videos and _engine_supports(engine, "videos"):
+            kwargs["videos"] = videos
+        answers = engine.systemone(state_text, questions, **kwargs)
+        meta = answers.get("_meta", {}) if isinstance(answers, dict) else {}
+        # Clef usage: decisions take zero completion tokens; input tokens
+        # ride along when the engine counted them.
+        usage: Dict[str, Any] = {"output_tokens": 0}
+        if isinstance(meta.get("input_tokens"), int):
+            usage["input_tokens"] = meta["input_tokens"]
+        payload: Dict[str, Any] = {
             "answers": translate_answers(answers),
-            "model": self.server.engine.model_name,
-            "usage": {},
-            "latency_ms": answers.get("_meta", {}).get("latency_ms"),
+            "model": engine.model_name,
+            "usage": usage,
+            "latency_ms": meta.get("latency_ms"),
         }
+        if images or videos:
+            dropped = meta.get("media_dropped") or {}
+            payload["media"] = {"images": len(images), "videos": len(videos)}
+            dropped_imgs = int(dropped.get("images", 0) or 0)
+            dropped_vids = int(dropped.get("videos", 0) or 0)
+            if not _engine_supports(engine, "images"):
+                dropped_imgs = len(images)
+            if not _engine_supports(engine, "videos"):
+                dropped_vids = len(videos)
+            if dropped_imgs or dropped_vids:
+                bits = []
+                if dropped_imgs:
+                    bits.append(f"{dropped_imgs} image(s)")
+                if dropped_vids:
+                    bits.append(f"{dropped_vids} video(s)")
+                payload["warnings"] = [
+                    f"{' and '.join(bits)} dropped: the "
+                    f"{getattr(self.server, 'engine_backend', 'local')} "
+                    "engine has no media path for them"
+                ]
+        return 200, payload
 
     def _handle_decisions(self) -> tuple[int, Dict[str, Any]]:
         """POST /v1/decisions -> (status, payload).

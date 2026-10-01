@@ -97,7 +97,7 @@ def build_questions() -> list:
 
 
 # -- judges -----------------------------------------------------------------
-def stub_judge(state_text, questions, images, *, env):
+def stub_judge(state_text, questions, images, videos, *, env):
     """Deterministic offline judge: greedy toward the treasure, avoids pits.
 
     Returns api-shaped answers so the loop below is backend-agnostic.
@@ -133,18 +133,20 @@ def stub_judge(state_text, questions, images, *, env):
 
 def make_judge(engine_name, env):
     if engine_name == "stub":
-        return lambda state_text, questions, images: stub_judge(
-            state_text, questions, images, env=env)
+        return lambda state_text, questions, images, videos: stub_judge(
+            state_text, questions, images, videos, env=env)
     if engine_name == "local":
         from systemone import SystemOne
         eng = SystemOne()
-        return lambda state_text, questions, images: eng.systemone(state_text, questions)
+        return lambda state_text, questions, images, videos: eng.systemone(
+            state_text, questions, images=images or None, videos=videos or None)
     if engine_name == "sglang":
         from systemone import SGLangBackend
         eng = SGLangBackend()
         if not eng.health():
             raise SystemExit(f"SGLang not reachable at {eng.base_url}")
-        return lambda state_text, questions, images: eng.systemone(state_text, questions)
+        return lambda state_text, questions, images, videos: eng.systemone(
+            state_text, questions, images=images or None, videos=videos or None)
     raise SystemExit(f"unknown engine: {engine_name}")
 
 

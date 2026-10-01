@@ -68,6 +68,7 @@ live nightly server before depending on it.
 
 from __future__ import annotations
 
+import inspect
 import json
 import math
 import os
@@ -315,12 +316,15 @@ class SGLangBackend:
         state: str,
         questions: Sequence[Dict[str, Any]],
         images: Sequence[str] | None = None,
+        videos: Sequence[Any] | None = None,
     ) -> Dict[str, Any]:
         """Answer typed questions about `state` via SGLang /v1/decisions.
 
         Question shapes are identical to api.SystemOne.systemone; `images`
         optionally carries image URLs / data URIs (experimental — the
         endpoint's image support is undocumented; verify live first).
+        `videos` is accepted for protocol uniformity and reported in
+        ``_meta["media_dropped"]`` (/v1/decisions has no video path).
         Returns {name: answer_dict, ..., "_meta": {...}} with the same
         answer shapes as the local engine, plus "label_mass" per answer.
         """
@@ -399,6 +403,7 @@ class SGLangBackend:
                     "score": float(wmean),
                     "confidence": float(max(probs.values())),
                     "label_mass": label_mass,
+                    "legend": dict(q.get("legend") or {}),
                 }
             else:  # noul <- yes_no
                 p_yes = ans.get("probability")
@@ -423,6 +428,11 @@ class SGLangBackend:
             "latency_ms": round(latency_ms, 1),
             "state_chars": len(state),
         }
+        if videos:
+            answers["_meta"]["media_dropped"] = {
+                "images": 0,
+                "videos": len(list(videos)),
+            }
         return answers
 
     def speculative_decide(
@@ -529,11 +539,37 @@ class HybridBackend:
         vals = [float(c) for c in confs if isinstance(c, (int, float))]
         return min(vals) if vals else 0.0
 
+    @staticmethod
+    def _call(
+        engine: Any,
+        state: str,
+        questions: Sequence[Dict[str, Any]],
+        images: Sequence[Any] | None,
+        videos: Sequence[Any] | None,
+    ) -> Dict[str, Any]:
+        """Call engine.systemone, forwarding media it accepts.
+
+        Non-empty media is passed only for keywords the engine declares,
+        so older stubs with ``systemone(state, questions)`` keep working.
+        """
+        kwargs: Dict[str, Any] = {}
+        if images or videos:
+            try:
+                params = inspect.signature(engine.systemone).parameters
+            except (TypeError, ValueError):
+                params = {}
+            if images and "images" in params:
+                kwargs["images"] = images
+            if videos and "videos" in params:
+                kwargs["videos"] = videos
+        return engine.systemone(state, questions, **kwargs)
+
     def systemone(
         self,
         state: str,
         questions: Sequence[Dict[str, Any]],
         images: Sequence[str] | None = None,
+        videos: Sequence[Any] | None = None,
     ) -> Dict[str, Any]:
         if self.local is None:
             if self.sglang is None:
@@ -541,7 +577,7 @@ class HybridBackend:
                     "HybridBackend has neither a local engine nor an "
                     "SGLang backend configured"
                 )
-            answers = self.sglang.systemone(state, questions, images=images)
+            answers = self._call(self.sglang, state, questions, images, videos)
             meta = dict(answers.get("_meta", {}))
             meta["backend"] = "hybrid/sglang"
             meta["escalated"] = True
@@ -549,7 +585,7 @@ class HybridBackend:
             answers["_meta"] = meta
             return answers
 
-        local_answers = self.local.systemone(state, questions)
+        local_answers = self._call(self.local, state, questions, images, videos)
         floor = self._min_confidence(local_answers)
         if floor >= self.escalate_below or self.sglang is None:
             meta = dict(local_answers.get("_meta", {}))
@@ -560,7 +596,7 @@ class HybridBackend:
             return local_answers
 
         try:
-            answers = self.sglang.systemone(state, questions, images=images)
+            answers = self._call(self.sglang, state, questions, images, videos)
         except SGLangError as exc:
             meta = dict(local_answers.get("_meta", {}))
             meta["backend"] = "hybrid/local"

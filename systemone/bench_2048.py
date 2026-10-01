@@ -113,7 +113,8 @@ class CannedBoardEnv:
 def make_http_judge(base_url: str):
     """Judge answering via the live shim's /v1/systemone endpoint."""
 
-    def judge(state_text: str, questions: list, images: list) -> dict:
+    def judge(state_text: str, questions: list, images: list,
+              videos: list) -> dict:
         body = {
             "model": "bench-2048",
             "state": state_text,

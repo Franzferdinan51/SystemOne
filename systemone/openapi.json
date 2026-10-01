@@ -114,6 +114,18 @@
             "type": "array"
            }
           ]
+         },
+         "images": {
+          "type": "array",
+          "description": "Clef media: image URLs / data URLs, {'image'|'url': ...} mappings, or frame arrays"
+         },
+         "videos": {
+          "type": "array",
+          "description": "Clef media: video URLs / data URLs, {'image'|'url': ...} mappings, or frame arrays"
+         },
+         "media_kwargs": {
+          "type": "object",
+          "description": "Optional processor kwargs (validated mapping; consumed by processor-backed engines)"
          }
         }
        }

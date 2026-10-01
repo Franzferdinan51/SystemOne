@@ -195,6 +195,8 @@ class SystemOne:
         build_prompts: bool = True,
         shuffle_options: bool = False,
         prompt_seed: int | None = None,
+        images: Sequence[Any] | None = None,
+        videos: Sequence[Any] | None = None,
     ) -> Dict[str, Any]:
         """Answer multiple typed questions about `state` in one batched pass.
 
@@ -282,6 +284,7 @@ class SystemOne:
                     "level": best,
                     "distribution": prob_map,
                     "confidence": score_confidence(probs),
+                    "legend": dict(q.get("legend") or {}),
                 }
             else:  # noul
                 p_yes = prob_map["yes"]
@@ -302,6 +305,12 @@ class SystemOne:
             "state_chars": len(state),
             "state_capped": state_capped,
         }
+        if images or videos:
+            # Text-only GLiClass engine: media is noted and skipped.
+            answers["_meta"]["media_dropped"] = {
+                "images": len(list(images or [])),
+                "videos": len(list(videos or [])),
+            }
         return answers
 
     def speculative_decide(

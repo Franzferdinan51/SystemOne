@@ -456,6 +456,7 @@ class JevDecideBackend:
         state: str,
         questions: Sequence[Dict[str, Any]],
         images: Sequence[Any] | None = None,
+        videos: Sequence[Any] | None = None,
     ) -> Dict[str, Any]:
         """Answer typed questions about `state` via the JEV server.
 
@@ -463,8 +464,10 @@ class JevDecideBackend:
         optionally carries image URLs / data URIs / paths, which travel in
         the JEV state list (a VLM-backed server such as JEV-27B-VL reads
         them; text-only servers ignore or reject them per their build).
-        Returns {name: answer_dict, ..., "_meta": {...}} with the same
-        answer shapes as the local engine.
+        `videos` is accepted for protocol uniformity and reported in
+        ``_meta["media_dropped"]`` (JEV decision models read images, not
+        video). Returns {name: answer_dict, ..., "_meta": {...}} with the
+        same answer shapes as the local engine.
         """
         from .patterns import choice_confidence
 
@@ -524,6 +527,7 @@ class JevDecideBackend:
                     "score": float(wmean),
                     "confidence": float(max(probs.values())) if probs else 0.0,
                     "label_mass": None,
+                    "legend": dict(q.get("legend") or {}),
                 }
             else:  # noul <- yes/no statement
                 statement = q.get("statement") or prompt or ""
@@ -554,6 +558,11 @@ class JevDecideBackend:
             "latency_ms": round((time.perf_counter() - t0) * 1000.0, 1),
             "state_chars": len(state),
         }
+        if videos:
+            answers["_meta"]["media_dropped"] = {
+                "images": 0,
+                "videos": len(list(videos)),
+            }
         return answers
 
     # -- System 2 ----------------------------------------------------------
