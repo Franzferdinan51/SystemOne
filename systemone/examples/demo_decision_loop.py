@@ -1,26 +1,15 @@
-"""Fast decision-loop demo: the SGLang Pokemon pattern, distilled.
+"""Fast decision-loop demo: See > Decide > Act on a tiny grid world.
 
 Each tick is ONE batched decisions call carrying several questions at once
 (action choice + stuck? gate + progress score), answered in a single pass —
 the loop shape SGLang's /v1/decisions was built for:
 
-    capture state -> build questions -> ONE decisions call -> act ->
-    compress turn into memory -> repeat until done / step budget
+    SEE state -> DECIDE (one call) -> ACT -> compress turn -> repeat
 
-Patterns ported from the agent-loop research (see README "SGLang interop"):
-  * keep the prompt prefix byte-identical across ticks so SGLang's
-    RadixAttention prefix cache reuses the KV cache (shared system prompt
-    first, changing state second, fresh observation last);
-  * only the latest observation is carried raw — older turns are compressed
-    into "I saw / I thought / I did" one-liners (vision-only Pokemon agents
-    do exactly this; screenshots cost ~6x tokens/step);
-  * StallGuard trips when consecutive ticks make no progress;
-  * gate on label_mass (SGLang) / confidence: low -> fall back to WAIT
-    instead of acting on a guess.
-
-The world here is a tiny mock grid (treasure hunt) so the demo runs fully
-offline with a scripted judge. Point --engine at a real backend to watch
-the same loop drive real decisions:
+The loop itself lives in systemone/loop.py (DecisionLoop); this demo only
+provides the world (a mock treasure-hunt grid) and the judges, so it runs
+fully offline with a scripted judge. Point --engine at a real backend to
+watch the same loop drive real decisions:
 
     python examples/demo_decision_loop.py --engine stub    # offline (default)
     python examples/demo_decision_loop.py --engine local   # GLiClass
@@ -36,7 +25,8 @@ import sys
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
 
-from systemone import StallGuard, make_questions  # noqa: E402
+from systemone import make_questions  # noqa: E402
+from systemone.loop import ActResult, DecisionLoop, Observation  # noqa: E402
 
 # -- mock world: 6x6 grid, treasure at (5, 4), lava pits --------------------
 W, H = 6, 6
@@ -53,9 +43,9 @@ SYSTEM_PREFIX = (
 )
 
 
-def render(state) -> str:
+def render(player) -> str:
     """Text viewport of the grid around the player."""
-    px, py = state["player"]
+    px, py = player
     rows = []
     for y in range(H):
         row = ""
@@ -72,14 +62,30 @@ def render(state) -> str:
     return "\n".join(rows)
 
 
-def build_state_text(memory_lines, obs_text, tick) -> str:
-    """Byte-identical prefix first (cache-friendly), fresh state last."""
-    mem = "\n".join(memory_lines[-6:]) if memory_lines else "(no history yet)"
-    return (
-        f"{SYSTEM_PREFIX}\n\n"
-        f"Memory (compressed turns):\n{mem}\n\n"
-        f"Tick {tick} — current observation:\n{obs_text}"
-    )
+class GridEnv:
+    """SEE the grid as text; ACT by moving the cursor."""
+
+    def __init__(self, start=(0, 0)):
+        self.player = start
+        self.trail = []
+        self.tick = 0
+        self.prev_dist = None
+
+    def observe(self):
+        self._dist = abs(self.player[0] - TREASURE[0]) + abs(self.player[1] - TREASURE[1])
+        return Observation(text=render(self.player))
+
+    def act(self, action):
+        dx, dy = DELTA.get(action, (0, 0))
+        nx, ny = self.player[0] + dx, self.player[1] + dy
+        if 0 <= nx < W and 0 <= ny < H and (nx, ny) not in PITS:
+            self.player = (nx, ny)
+        self.trail.append(self.player)
+        self.tick += 1
+        dist = abs(self.player[0] - TREASURE[0]) + abs(self.player[1] - TREASURE[1])
+        progressed = self.prev_dist is None or dist < self.prev_dist
+        self.prev_dist = dist
+        return ActResult(progressed=progressed, done=self.player == TREASURE)
 
 
 def build_questions() -> list:
@@ -91,12 +97,12 @@ def build_questions() -> list:
 
 
 # -- judges -----------------------------------------------------------------
-def stub_judge(state, questions):
+def stub_judge(state_text, questions, images, *, env):
     """Deterministic offline judge: greedy toward the treasure, avoids pits.
 
     Returns api-shaped answers so the loop below is backend-agnostic.
     """
-    px, py = state["player"]
+    px, py = env.player
     tx, ty = TREASURE
     # greedy: reduce manhattan distance, avoid pits/walls
     best, best_d = "wait", abs(px - tx) + abs(py - ty)
@@ -110,11 +116,11 @@ def stub_judge(state, questions):
             best, best_d = a, d
     n = len(ACTIONS)
     probs = {a: (0.7 if a == best else 0.3 / (n - 1)) for a in ACTIONS}
-    stuck = len(state["trail"]) >= 4 and len(set(state["trail"][-4:])) == 1
+    stuck = len(env.trail) >= 4 and len(set(env.trail[-4:])) == 1
     return {
         "action": {"type": "choice", "choice": best, "probabilities": probs,
                    "confidence": 0.7, "label_mass": None},
-        "progress": {"type": "score", "level": str(min(4, state["tick"] // 4)),
+        "progress": {"type": "score", "level": str(min(4, env.tick // 4)),
                      "distribution": {"0": 0.1, "1": 0.15, "2": 0.2,
                                       "3": 0.25, "4": 0.3},
                      "confidence": 0.3, "label_mass": None},
@@ -125,19 +131,20 @@ def stub_judge(state, questions):
     }
 
 
-def make_judge(engine_name):
+def make_judge(engine_name, env):
     if engine_name == "stub":
-        return lambda state_text, questions, **kw: stub_judge(kw["world"], questions)
+        return lambda state_text, questions, images: stub_judge(
+            state_text, questions, images, env=env)
     if engine_name == "local":
         from systemone import SystemOne
         eng = SystemOne()
-        return lambda state_text, questions, **kw: eng.systemone(state_text, questions)
+        return lambda state_text, questions, images: eng.systemone(state_text, questions)
     if engine_name == "sglang":
         from systemone import SGLangBackend
         eng = SGLangBackend()
         if not eng.health():
             raise SystemExit(f"SGLang not reachable at {eng.base_url}")
-        return lambda state_text, questions, **kw: eng.systemone(state_text, questions)
+        return lambda state_text, questions, images: eng.systemone(state_text, questions)
     raise SystemExit(f"unknown engine: {engine_name}")
 
 
@@ -150,54 +157,24 @@ def main() -> None:
     args = ap.parse_args()
     random.seed(args.seed)
 
-    judge = make_judge(args.engine)
-    world = {"player": (0, 0), "tick": 0, "trail": []}
-    memory: list[str] = []          # compressed "I saw / thought / did" lines
-    guard = StallGuard(max_stalls=3)
-    prev_dist = None
+    env = GridEnv()
+    judge = make_judge(args.engine, env)
+    loop = DecisionLoop(judge, budget=args.budget, system_prompt=SYSTEM_PREFIX)
+    result = loop.run(env, build_questions())
 
-    for tick in range(args.budget):
-        world["tick"] = tick
-        obs = render(world)
-        state_text = build_state_text(memory, obs, tick)
-        answers = judge(state_text, build_questions(), world=world)
-        meta = answers.get("_meta", {})
+    for step in result.steps:
+        print(f"tick {step.tick:2d} action={step.action:5s} conf={step.confidence:.2f} "
+              f"pos={env.trail[step.tick] if step.tick < len(env.trail) else env.player} "
+              f"[{step.backend}/{step.latency_ms}ms]"
+              + (" GATED" if step.gated else "")
+              + (f" ESCALATED ({step.escalation})" if step.escalated else ""))
 
-        action = answers["action"]["choice"]
-        conf = answers["action"]["confidence"]
-        mass = answers["action"].get("label_mass")
-        # Uncertainty gate: low label_mass (SGLang) or low confidence -> wait.
-        if (mass is not None and mass < 0.5) or conf < 0.35:
-            action = "wait"
-
-        px, py = world["player"]
-        dx, dy = DELTA[action]
-        nx, ny = px + dx, py + dy
-        if 0 <= nx < W and 0 <= ny < H and (nx, ny) not in PITS:
-            world["player"] = (nx, ny)
-        world["trail"].append(world["player"])
-
-        dist = abs(world["player"][0] - TREASURE[0]) + abs(world["player"][1] - TREASURE[1])
-        progressed = prev_dist is None or dist < prev_dist
-        prev_dist = dist
-        status = guard.observe(progressed)
-
-        memory.append(
-            f"tick {tick}: I saw player at {world['player']}; "
-            f"I thought action={action} (conf {conf:.2f}); "
-            f"I did move to {world['player']}."
-        )
-        print(f"tick {tick:2d} action={action:5s} conf={conf:.2f} "
-              f"pos={world['player']} dist={dist} "
-              f"[{meta.get('backend')}/{meta.get('latency_ms')}ms]")
-
-        if world["player"] == TREASURE:
-            print(f"\nTreasure reached in {tick + 1} ticks.")
-            return
-        if status == "stalled" or answers["stuck"]["answer"]:
-            print(f"\nStalled at tick {tick} — stopping instead of spinning.")
-            return
-    print(f"\nStep budget ({args.budget}) exhausted.")
+    if result.outcome == "done":
+        print(f"\nTreasure reached in {result.n_ticks} ticks.")
+    elif result.outcome == "stalled":
+        print("\nStalled — stopping instead of spinning.")
+    else:
+        print(f"\nStep budget ({args.budget}) exhausted.")
 
 
 if __name__ == "__main__":

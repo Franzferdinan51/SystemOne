@@ -58,6 +58,7 @@ def test_spec_parses_and_lists_all_routes():
     assert set(spec["paths"]) == {
         "/", "/healthz", "/openapi.json",
         "/v1/systemone", "/v1/decisions",
+        "/v1/decide", "/v1/decide/info",
         "/v1/systemone/route", "/v1/systemone/rank-plans",
         "/v1/systemone/decide",
     }

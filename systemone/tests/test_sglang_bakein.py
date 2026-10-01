@@ -141,7 +141,7 @@ def test_api_reexports_patterns_when_heavy():
 
 def test_create_engine_rejects_unknown_name():
     try:
-        create_engine("jev")
+        create_engine("bogus-engine")
     except ValueError as exc:
         assert "SYSTEMONE_ENGINE" in str(exc)
     else:

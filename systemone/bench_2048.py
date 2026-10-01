@@ -40,6 +40,7 @@ os.environ.setdefault("TRANSFORMERS_OFFLINE", "1")
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from systemone.shim import serve  # noqa: E402
+from systemone.loop import ActResult, DecisionLoop, Observation  # noqa: E402
 from systemone.patterns import require_http_url  # noqa: E402
 
 # Four canned board snapshots (4x4). Cycled through; the point is the
@@ -85,26 +86,63 @@ def post_json(url: str, body: dict) -> dict:
         return json.loads(resp.read())
 
 
-def decide_move(base_url: str, board: str) -> tuple[str, float]:
-    """One jev-use-style decision: candidates in, chosen move ID out."""
-    body = {
-        "model": "bench-2048",
-        "state": f"2048 board state (4x4, rows top to bottom):\n{board}",
-        "questions": {
+class CannedBoardEnv:
+    """SEE canned snapshots in rotation; ACT always succeeds.
+
+    There is no 2048 engine here (see HONEST LIMITS above) — the act step
+    only advances the snapshot rotation, so every tick counts as progress
+    and the loop measures pure decision latency.
+    """
+
+    def __init__(self) -> None:
+        self.i = 0
+
+    def observe(self) -> Observation:
+        return Observation(
+            text=f"2048 board state (4x4, rows top to bottom):\n"
+            f"{BOARDS[self.i % len(BOARDS)]}"
+        )
+
+    def act(self, action: str) -> ActResult:
+        if action not in MOVES:
+            raise RuntimeError(f"engine returned invalid move: {action!r}")
+        self.i += 1
+        return ActResult(progressed=True)
+
+
+def make_http_judge(base_url: str):
+    """Judge answering via the live shim's /v1/systemone endpoint."""
+
+    def judge(state_text: str, questions: list, images: list) -> dict:
+        body = {
+            "model": "bench-2048",
+            "state": state_text,
+            "questions": {
+                "move": {
+                    "type": "choice",
+                    "criteria": MOVES,
+                    "instructions": {"goal": GOAL, "rules": RULES},
+                }
+            },
+        }
+        payload = post_json(f"{base_url}/v1/systemone", body)
+        move = payload["answers"]["move"]
+        probs = move.get("probabilities") or {}
+        return {
             "move": {
                 "type": "choice",
-                "criteria": MOVES,
-                "instructions": {"goal": GOAL, "rules": RULES},
-            }
-        },
-    }
-    t0 = time.perf_counter()
-    payload = post_json(f"{base_url}/v1/systemone", body)
-    ms = (time.perf_counter() - t0) * 1000.0
-    move = payload["answers"]["move"]["choice"]
-    if move not in MOVES:
-        raise RuntimeError(f"engine returned invalid move: {move!r}")
-    return move, ms
+                "choice": move.get("choice"),
+                "probabilities": probs,
+                "confidence": float(move.get("confidence", 0.0) or 0.0),
+                "label_mass": None,
+            },
+            "_meta": {
+                "backend": "shim-http",
+                "latency_ms": payload.get("latency_ms"),
+            },
+        }
+
+    return judge
 
 
 def main() -> None:
@@ -119,14 +157,21 @@ def main() -> None:
     base_url = f"http://127.0.0.1:{port}"
     try:
         print(f"engine: {server.engine.model_name} (device {server.engine.device})")
-        latencies: list[float] = []
+        loop = DecisionLoop(
+            make_http_judge(base_url),
+            action_name="move",
+            uncertainty_action="left",
+            budget=args.steps,
+            system_prompt=GOAL,
+        )
         t_all = time.perf_counter()
-        for i in range(args.steps):
-            board = BOARDS[i % len(BOARDS)]
-            move, ms = decide_move(base_url, board)
-            latencies.append(ms)
-            print(f"  step {i + 1:>2}/{args.steps}: move={move:<5} {ms:7.1f} ms")
+        result = loop.run(CannedBoardEnv(), [{"name": "move", "type": "choice"}])
         total_s = time.perf_counter() - t_all
+        latencies = []
+        for i, step in enumerate(result.steps):
+            ms = step.latency_ms if step.latency_ms is not None else 0.0
+            latencies.append(ms)
+            print(f"  step {i + 1:>2}/{args.steps}: move={step.action:<5} {ms:7.1f} ms")
     finally:
         server.shutdown()
         thread.join(timeout=5)

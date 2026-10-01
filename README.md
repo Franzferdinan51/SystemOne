@@ -6,6 +6,23 @@ Jev is a closed API that returns typed decisions with calibrated probabilities
 hardware: tiny open models (Apache-2.0, 32M–439M params), one batched call,
 honest probabilities.
 
+## Philosophy: See > Decide > Act
+
+Every agentic use of SystemOne runs one loop, implemented once in
+`systemone/loop.py` (`DecisionLoop`) and shared by the demos, the game
+benchmarks, and operator tools:
+
+    SEE     observe the world as text (+ optional images)
+    DECIDE  one batched System 1 call: action + gates in a single pass
+    ACT     execute, measure progress, compress the turn into memory
+
+The loop bakes in the non-negotiables: cache-friendly state prefixes,
+compressed "I saw / I thought / I did" memory, an uncertainty gate that
+falls back to a safe action instead of acting on a guess, `StallGuard`
+early-stop, and System 1 → System 2 escalation below 0.70 confidence
+(the [JEV-27B-VL](https://huggingface.co/autotrust/JEV-27B-VL) operating
+point). See [The agent loop](#the-agent-loop-see--decide--act).
+
 ## What's new (September 2026)
 
 The consolidated end-of-program snapshot. SystemOne is no longer just the
@@ -49,6 +66,15 @@ into shipping products:
   'systemone[local]'`), and `HybridBackend` escalates low-confidence
   local calls to a 27B-class SGLang judge. See [SGLang
   interop](#sglang-interop).
+- **JEV decision models + See > Decide > Act** — `SYSTEMONE_ENGINE=jev`
+  speaks the JEV-27B-VL `/v1/decide` wire format (System 1 over text and
+  images, System 2 chat, vLLM-raw client-side math), the shim serves
+  `POST /v1/decide` + `GET /v1/decide/info`, and `systemone/loop.py` is
+  the one See > Decide > Act agent loop every demo and benchmark shares.
+  Overlapping loop harnesses and duplicate route tests were consolidated
+  onto it. See [JEV decision
+  models](#jev-decision-models-systemone_enginejev) and [The agent
+  loop](#the-agent-loop-see--decide--act).
 
 ## Map to Jev's primitives
 
@@ -332,11 +358,66 @@ JevBench board:
 | `sglang` | Qwen-class judges via SGLang `/v1/decisions` | 27B-class reasoning; sub-100 ms served |
 | `jevk5` | JevK5 open weights (Apache-2.0) via `jevk5-serve` | JevBench #5 (62.04), 1st fully open |
 | `onnx` | ONNX cross-encoder rerank judge, CPU-only, no torch | easy 81.2% @ ~22 ms, hard 35.1%, original 36.1% (BGE-base int8, Apple Silicon CPU) |
+| `jev` | JEV decision model (System 1 + System 2, multimodal) via `/v1/decide` | JEV-27B-VL: Plan-RewardBench 73.2 (top), VL-RewardBench 78.3, ECE 0.0009 (model card) |
 
 The ONNX judge is the honest CPU fallback: strong on easy-tier routing-style
 items, weak on hard items next to 4B+ purpose-built judges — pick the
 backend your hardware earns. `HybridBackend` (local-first, SGLang
-escalation) composes cheap + smart when a big judge is reachable.
+escalation) composes cheap + smart when a big judge is reachable. When
+`JEV_URL` is configured, `auto` prefers the JEV decision model — it is
+the flagship judge: calibrated System 1 over text *and* images plus a
+System 2 reasoning path in one engine.
+
+## JEV decision models (`SYSTEMONE_ENGINE=jev`)
+
+SystemOne speaks the [JEV-27B-VL](https://huggingface.co/autotrust/JEV-27B-VL)
+(System 1 + System 2, Apache-2.0) wire format in both directions, following
+the model card and the
+[JEV-27B-DEMO](https://github.com/yuhai-china/JEV-27B-DEMO) client:
+
+- **Client** — `JevDecideBackend` (`systemone/jev_backend.py`) sends
+  `{kind, state, question, options?}` to `POST {JEV_URL}/v1/decide`
+  (`noul` / `choice` / `score`; state mixes text with `{"image": ...}`
+  parts), with `Authorization: Bearer $JEV_API_KEY` when set. Against
+  plain `vllm serve`, `JEV_BACKEND=vllm` with a local `JEV_BUNDLE` does
+  the one-token logprob + bias + per-kind temperature math client-side
+  (stdlib only). `chat()` exposes System 2, optionally thinking.
+- **Server** — the shim serves `POST /v1/decide` and `GET
+  /v1/decide/info`, so clients written against `serve_decide.py` or a
+  hosted Jev API work unchanged against this box. The `jev` engine
+  forwards natively (images preserved); every other engine answers the
+  text projection and reports dropped images in `warnings`.
+- **Escalation** — below 0.70 System 1 confidence the agent loop asks
+  System 2 (the model card's operating point: 0.892 accuracy with 70%
+  answered in 0.11 s).
+
+```bash
+JEV_URL=http://gpu-box:8000 SYSTEMONE_ENGINE=jev systemone serve
+curl localhost:8765/v1/decide -H 'Content-Type: application/json' -d '{
+  "kind": "choice", "state": "Customer: charged twice for one coffee.",
+  "question": "Which team should handle this?",
+  "options": ["billing", "shipping", "tech support"]}'
+```
+
+## The agent loop: See > Decide > Act
+
+`systemone/loop.py` is the one loop every agentic use shares. Implement
+an `Env` (`observe()` → text/images, `act(action)` → progress), pick a
+judge (any engine's `systemone`, or a scripted stub), and run:
+
+```python
+from systemone import DecisionLoop, make_questions
+from my_world import MyEnv
+
+loop = DecisionLoop(judge, budget=40, system_prompt="...")
+result = loop.run(MyEnv(), make_questions(choices={"action": [...]}))
+print(result.outcome, result.n_ticks)  # done | stalled | budget
+```
+
+`examples/demo_decision_loop.py` (treasure-hunt grid) and
+`bench_2048.py` (headless 2048 decision benchmark) are both thin `Env` +
+judge wrappers over `DecisionLoop` — new worlds follow the same shape
+instead of hand-rolling loop, gating, memory, and stall logic.
 
 ## SGLang interop
 
@@ -349,7 +430,7 @@ you select (`--engine` flag overrides the env var):
 
 | setting | behavior |
 |---|---|
-| `auto` (default) | SGLang when `SGLANG_BASE_URL` is set and healthy, else JevK5 when `JEVK5_BASE_URL` is set and healthy, else the local GLiClass engine. Probes only run for explicitly configured servers, so a default box never stalls at startup. |
+| `auto` (default) | JEV when `JEV_URL` is set and healthy, else SGLang when `SGLANG_BASE_URL` is set and healthy, else JevK5 when `JEVK5_BASE_URL` is set and healthy, else the local GLiClass engine. Probes only run for explicitly configured servers, so a default box never stalls at startup. |
 | `local` | Always the GLiClass engine. Needs `pip install 'systemone[local]'`. |
 | `sglang` | Always SGLang. Unreachable → fails open to local when available, else a clear error. |
 | `jevk5` | Always a JevK5 server (`jevk5-serve`'s `/v1/systemone`). Same fail-open behavior as `sglang`. |

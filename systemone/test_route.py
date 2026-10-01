@@ -284,32 +284,6 @@ def test_confidence_escalation_on_disagreement():
 
 # -- deterministic complexity analysis ----------------------------------------
 
-def test_analyze_task_heavy_signals():
-    det = shim.analyze_task(
-        "debug this intermittent deadlock in my multithreaded Rust service")
-    assert det["tier"] == "heavy"
-    assert det["has_signal"]
-    assert det["reasons"]
-
-
-def test_analyze_task_economy_signals():
-    det = shim.analyze_task("summarize this product review in one sentence")
-    assert det["tier"] == "economy"
-    assert det["has_signal"]
-
-
-def test_analyze_task_default_balanced():
-    det = shim.analyze_task("help me plan my week")
-    assert det["tier"] == "balanced"
-    assert not det["has_signal"]
-
-
-def test_analyze_task_conflict_errs_heavy():
-    # a legal document that needs summarizing: substance wins over form
-    det = shim.analyze_task("summarize this contract")
-    assert det["tier"] == "heavy"
-    assert det["has_signal"]
-
 
 # -- hybrid routing table -------------------------------------------------------
 # Uses the real bundled registry (economy/balanced/heavy) with the
@@ -342,33 +316,6 @@ ROUTING_TABLE = [
     # ... but 'economy' never drops below a signal-backed deterministic floor
     ("debug this deadlock", "economy", "heavy"),
 ]
-
-
-@pytest.mark.parametrize("task,bias,expected", ROUTING_TABLE)
-def test_routing_table(task, bias, expected):
-    cands = candidates_from_registry(load_registry())
-    route = route_decision(StubEngine(), task, cands, bias)
-    assert route["tier"] == expected, route["rationale"]
-    assert route["model_id"] in route["rationale"]
-    assert abs(sum(route["probabilities"].values()) - 1.0) < 1e-9
-
-
-def test_classifier_raise_when_confident():
-    cands = candidates_from_registry(load_registry())
-    route = route_decision(
-        _ConfidentStub("last", 0.72), "help me plan my week", cands, "balanced")
-    assert route["tier"] == "heavy"
-    assert "raised" in route["rationale"].lower()
-
-
-def test_confidence_escalation_on_disagreement():
-    cands = candidates_from_registry(load_registry())
-    route = route_decision(
-        _ConfidentStub("first", 0.70), "help me plan my week", cands, "balanced")
-    # deterministic says balanced (0.68); classifier confidently says economy
-    # (0.70) -> confidence drops to 0.56 -> escalate one tier toward capability
-    assert route["tier"] == "heavy"
-    assert "escalat" in route["rationale"].lower()
 
 
 # -- HTTP ---------------------------------------------------------------------

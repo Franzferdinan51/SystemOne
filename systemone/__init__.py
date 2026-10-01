@@ -6,6 +6,8 @@ SGLang-served decision model:
 - api.SystemOne / api.systemone  -> choice / score / noul in one batched call
 - sglang_backend.SGLangBackend   -> same shapes via SGLang /v1/decisions
 - sglang_backend.HybridBackend   -> local-first, SGLang escalation
+- jev_backend.JevDecideBackend   -> same shapes via a JEV decision model
+- loop.DecisionLoop              -> See > Decide > Act, the one agent loop
 - calibration.*                 -> temperature / Platt / isotonic calibration
 - mcp_server                     -> MCP tools (verify_claims, screen_content,
                                    rank_candidates) over stdio
@@ -76,7 +78,9 @@ from .patterns import (
     validate_distribution,
     with_abstain,
 )
+from .jev_backend import JevDecideBackend, JevError
 from .jevk5_backend import JevK5Error, JevK5ServerBackend
+from .loop import ActResult, DecisionLoop, LoopResult, Observation, Step, run_loop
 from .rerank_backend import OnnxCrossEncoder, RerankBackend
 from .sglang_backend import HybridBackend, SGLangBackend, SGLangError
 
@@ -88,6 +92,14 @@ __all__ = [
     "HybridBackend",
     "JevK5ServerBackend",
     "JevK5Error",
+    "JevDecideBackend",
+    "JevError",
+    "DecisionLoop",
+    "run_loop",
+    "Observation",
+    "ActResult",
+    "Step",
+    "LoopResult",
     "RerankBackend",
     "OnnxCrossEncoder",
     "MAX_STATE_CHARS",

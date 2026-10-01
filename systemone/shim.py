@@ -25,6 +25,10 @@ Endpoints:
                               yes_no, label_mass), served by the local engine
                               — one call, N typed questions, single batched
                               pass (see below)
+    POST /v1/decide           JEV System 1 dialect (kind / state / question /
+                              options, images in state); native on the jev
+                              engine, text projection elsewhere (see below)
+    GET  /v1/decide/info      option limit, kinds, image support, backend
     POST /v1/systemone/route  model router: pick the cheapest sufficient
                               local tier for a task (see below)
     POST /v1/systemone/rank-plans
@@ -117,6 +121,7 @@ except ImportError:  # slim install (no torch/gliclass): SGLang-engine or
     SystemOne = None  # type: ignore[assignment,misc]
 
 
+from .jev_backend import JevDecideBackend
 from .jevk5_backend import JevK5ServerBackend
 from .rerank_backend import OnnxCrossEncoder, RerankBackend
 from .sglang_backend import HybridBackend, SGLangBackend
@@ -1181,6 +1186,147 @@ def translate_decisions_answers(
     return out
 
 
+# -- JEV /v1/decide compatibility (AutoTrust JEV-27B-VL wire format) ----------
+#
+# JEV decision models (JEV-27B-VL model card,
+# https://huggingface.co/autotrust/JEV-27B-VL) serve System 1 over
+# POST /v1/decide: {kind, state, question, options?} with kind = noul |
+# choice | score, state = string | JSON | list mixing text and images, and
+# a calibrated probability for every option in the reply. This shim
+# answers the same dialect: clients written against serve_decide.py or a
+# hosted Jev API work unchanged against this box.
+#
+# With SYSTEMONE_ENGINE=jev the request is forwarded natively (images
+# preserved); every other engine answers the text projection (image parts
+# noted and skipped, reported in "warnings").
+
+_JEV_DECIDE_KINDS = ("noul", "choice", "score")
+_JEV_DECIDE_MAX_OPTIONS = 256
+
+
+def decide_option_limit(engine: Any, backend_name: str) -> int:
+    """Max choice options /v1/decide serves on this engine.
+
+    Native JEV servers take the wire-format 256; the SGLang engine caps at
+    26 (SGLang's /v1/decisions limit); the local GLiClass pass width fits
+    255. Anything above the serving engine's limit is a 422, mirroring
+    /v1/decisions behavior.
+    """
+    if isinstance(engine, JevDecideBackend):
+        return 256
+    if backend_name == "sglang":
+        return 26
+    return 255
+
+
+def decide_state_parts(state: Any) -> tuple[str, List[str]]:
+    """JEV /v1/decide `state` -> (text, image_refs).
+
+    Accepts a string, a JSON value, or a list mixing text with images in
+    the model card's {"image": ...} form or OpenAI image_url parts.
+    """
+    if state is None:
+        return "", []
+    if isinstance(state, str):
+        return state, []
+    if isinstance(state, list):
+        texts: List[str] = []
+        images: List[str] = []
+        for part in state:
+            if isinstance(part, str):
+                texts.append(part)
+            elif isinstance(part, dict) and "image" in part:
+                images.append(str(part["image"]))
+            elif isinstance(part, dict) and part.get("type") == "text":
+                texts.append(str(part.get("text", "")))
+            elif isinstance(part, dict) and part.get("type") == "image_url":
+                inner = part.get("image_url") or {}
+                images.append(
+                    str(inner.get("url", "") if isinstance(inner, dict) else inner)
+                )
+            else:
+                texts.append(state_to_text(part))
+        return "\n".join(t for t in texts if t).strip(), [i for i in images if i]
+    return state_to_text(state), []
+
+
+def translate_decide_body(
+    body: Dict[str, Any],
+) -> tuple[str, str, List[str], str, List[str]]:
+    """JEV /v1/decide body -> (kind, state_text, images, question, options)."""
+    kind = body.get("kind")
+    if kind not in _JEV_DECIDE_KINDS:
+        raise Unprocessable(
+            f"'kind' must be one of {', '.join(_JEV_DECIDE_KINDS)}"
+        )
+    if "state" not in body:
+        raise Unprocessable("request must include 'state'")
+    state_text, images = decide_state_parts(body.get("state"))
+    if len(state_text) > MAX_STATE_CHARS:
+        state_text = state_text[:MAX_STATE_CHARS]
+    question = body.get("question")
+    if not isinstance(question, str) or not question.strip():
+        raise Unprocessable("request must include a non-empty 'question' string")
+    options: List[str] = []
+    if kind == "choice":
+        raw = body.get("options")
+        if not isinstance(raw, list) or not (
+            2 <= len(raw) <= _JEV_DECIDE_MAX_OPTIONS
+        ):
+            raise Unprocessable(
+                "'options' must be a list of 2-"
+                f"{_JEV_DECIDE_MAX_OPTIONS} strings for kind 'choice'"
+            )
+        options = [str(o) for o in raw]
+    elif kind == "noul":
+        options = ["false", "true"]
+    else:
+        options = [str(i) for i in range(6)]
+    return kind, state_text, images, question.strip(), options
+
+
+def translate_decide_answer(
+    kind: str,
+    options: List[str],
+    answer: Dict[str, Any],
+    model: str,
+    latency_ms: Any,
+) -> Dict[str, Any]:
+    """One engine answer -> JEV /v1/decide response mapping."""
+    if kind == "noul":
+        probs = [1.0 - float(answer["probability"]), float(answer["probability"])]
+    elif kind == "score":
+        dist = answer.get("distribution") or {}
+        probs = [float(dist.get(o, 0.0)) for o in options]
+    else:
+        dist = answer.get("probabilities") or {}
+        probs = [float(dist.get(o, 0.0)) for o in options]
+    total = sum(probs)
+    if total > 0:
+        probs = [p / total for p in probs]
+    else:
+        probs = [1.0 / len(options)] * len(options)
+    idx = max(range(len(probs)), key=probs.__getitem__)
+    try:
+        elapsed = float(latency_ms) / 1000.0 if latency_ms is not None else 0.0
+    except (TypeError, ValueError):
+        elapsed = 0.0
+    return {
+        "kind": kind,
+        "effective_kind": kind,
+        "options": options,
+        "probabilities": probs,
+        "choice_index": idx,
+        "choice": options[idx],
+        "adaptation": "native",
+        "protocol": "jev27-bare-v1",
+        "model": model,
+        "usage": {},
+        "num_model_requests": 1,
+        "elapsed_seconds": elapsed,
+    }
+
+
 # -- typed decision endpoint (/v1/systemone/decide) --------------------------
 #
 # Request/response schema mirrors the Jeff-1 sidecar's POST /v1/jeff1/decide
@@ -1502,6 +1648,67 @@ class ShimHandler(BaseHTTPRequestHandler):
             "latency_ms": answers.get("_meta", {}).get("latency_ms"),
         }
 
+    def _handle_decide_v1(self) -> tuple[int, Dict[str, Any]]:
+        """POST /v1/decide -> (status, payload).
+
+        JEV System 1 dialect (kind/state/question/options), served natively
+        by the jev engine (images preserved) or via the text projection on
+        every other engine (image parts noted, skipped, and reported in
+        "warnings"). Lets clients written against serve_decide.py or a
+        hosted Jev API work unchanged against this box.
+        """
+        body = self._read_body()
+        try:
+            kind, state_text, images, question, options = translate_decide_body(body)
+        except Unprocessable as e:
+            return 422, {"error": f"unprocessable: {e}"}
+        engine = self.server.engine
+        backend_name = getattr(self.server, "engine_backend", "custom")
+        limit = decide_option_limit(engine, backend_name)
+        if kind == "choice" and len(options) > limit:
+            return 422, {"error": (
+                f"unprocessable: {len(options)} options exceeds the "
+                f"{backend_name} engine's limit of {limit} "
+                "(use SYSTEMONE_ENGINE=jev for the full 256)"
+            )}
+        if isinstance(engine, JevDecideBackend):
+            resp = engine.decide(
+                kind, state_text, question,
+                options if kind == "choice" else None,
+                images=images,
+            )
+            return 200, resp
+        if images and not state_text:
+            return 422, {"error": (
+                "unprocessable: state contained only image parts; the "
+                f"{getattr(self.server, 'engine_backend', 'local')} engine "
+                "is text-only (use SYSTEMONE_ENGINE=jev with a VLM for images)"
+            )}
+        if kind == "choice":
+            question_spec: Dict[str, Any] = {
+                "name": "q", "type": "choice",
+                "options": options, "prompt": question,
+            }
+        elif kind == "score":
+            question_spec = {
+                "name": "q", "type": "score",
+                "levels": options, "prompt": question,
+            }
+        else:
+            question_spec = {"name": "q", "type": "noul", "statement": question}
+        answers = engine.systemone(state_text, [question_spec])
+        payload = translate_decide_answer(
+            kind, options, answers["q"], engine.model_name,
+            answers.get("_meta", {}).get("latency_ms"),
+        )
+        if images:
+            payload["warnings"] = [
+                f"{len(images)} image(s) dropped: the "
+                f"{getattr(self.server, 'engine_backend', 'local')} engine "
+                "is text-only (use SYSTEMONE_ENGINE=jev with a VLM for images)"
+            ]
+        return 200, payload
+
     def _scoring_ctx(self) -> Dict[str, Any]:
         return {
             "calibration": getattr(self.server, "calibration", None),
@@ -1661,6 +1868,17 @@ class ShimHandler(BaseHTTPRequestHandler):
                 self._send_json(200, spec)
             else:
                 self._send_json(500, {"error": "openapi spec unavailable"})
+        elif self.path == "/v1/decide/info":
+            engine = self.server.engine
+            backend_name = getattr(self.server, "engine_backend", "custom")
+            self._send_json(200, {
+                "option_limit": decide_option_limit(engine, backend_name),
+                "kinds": ["noul", "choice", "score"],
+                "image_support": isinstance(engine, JevDecideBackend),
+                "backend": backend_name,
+                "model": getattr(engine, "model_name", "?"),
+                "temperatures": None,
+            })
         else:
             self._send_json(404, {"error": "not found"})
 
@@ -1681,6 +1899,12 @@ class ShimHandler(BaseHTTPRequestHandler):
             elif self.path == "/v1/decisions":
                 status, payload = self._handle_decisions()
                 extra = {"n_questions": len(payload.get("answers", {}))}
+            elif self.path == "/v1/decide":
+                status, payload = self._handle_decide_v1()
+                extra = {
+                    "decide_kind": payload.get("kind"),
+                    "decide_choice": payload.get("choice"),
+                }
             elif self.path == "/v1/systemone/route":
                 status, payload = self._handle_route()
                 route = payload.get("route", {})
@@ -1704,9 +1928,9 @@ class ShimHandler(BaseHTTPRequestHandler):
             else:
                 status = 404
                 payload = {
-                    "error": "not found, POST /v1/decisions, /v1/systemone, "
-                             "/v1/systemone/route, /v1/systemone/rank-plans "
-                             "or /v1/systemone/decide"
+                    "error": "not found, POST /v1/decisions, /v1/decide, "
+                             "/v1/systemone, /v1/systemone/route, "
+                             "/v1/systemone/rank-plans or /v1/systemone/decide"
                 }
         except (ValueError, KeyError) as e:
             status, payload = 400, {"error": f"bad request: {e}"}
@@ -1778,7 +2002,7 @@ def _win32_detach(argv: list[str]) -> bool:
 # -- baked-in engine selection (local GLiClass vs SGLang) --------------------
 
 ENGINE_ENV = "SYSTEMONE_ENGINE"
-ENGINE_CHOICES = ("auto", "local", "sglang", "jevk5", "onnx")
+ENGINE_CHOICES = ("auto", "local", "sglang", "jevk5", "onnx", "jev")
 
 
 def engine_backend_name(engine: Any) -> str:
@@ -1790,6 +2014,8 @@ def engine_backend_name(engine: Any) -> str:
     """
     if isinstance(engine, HybridBackend):
         return "hybrid"
+    if isinstance(engine, JevDecideBackend):
+        return "jev"
     if isinstance(engine, SGLangBackend):
         return "sglang"
     if isinstance(engine, JevK5ServerBackend):
@@ -1807,13 +2033,15 @@ def create_engine(name: str | None = None) -> Any:
     """Build the decision engine the shim serves.
 
     Args:
-        name: "auto" (default) | "local" | "sglang" | "jevk5" | "onnx".
+        name: "auto" (default) | "local" | "sglang" | "jevk5" | "onnx" | "jev".
             Unset -> the SYSTEMONE_ENGINE env var, defaulting to "auto".
 
-    - auto: SGLang when SGLANG_BASE_URL is set and healthy, else JevK5
-      when JEVK5_BASE_URL is set and healthy, else the local GLiClass
-      engine. Probes only run for explicitly configured servers, so a
-      default box never stalls at startup.
+    - auto: JEV when JEV_URL is set and healthy, else SGLang when
+      SGLANG_BASE_URL is set and healthy, else JevK5 when JEVK5_BASE_URL
+      is set and healthy, else the local GLiClass engine. Probes only run
+      for explicitly configured servers, so a default box never stalls at
+      startup. The JEV decision model wins when configured — it is the
+      flagship judge (calibrated System 1 + System 2 in one engine).
     - local: the GLiClass engine. Needs torch/transformers/gliclass
       (pip install 'systemone[local]').
     - sglang: SGLangBackend. When the server is unreachable it fails open
@@ -1824,6 +2052,9 @@ def create_engine(name: str | None = None) -> Any:
       Xenova/bge-reranker-base int8, override with RERANK_MODEL_ID /
       RERANK_ONNX_FILE). Needs onnxruntime + tokenizers +
       huggingface_hub. Never auto-selected (it downloads weights).
+    - jev: JevDecideBackend (a JEV decision model's /v1/decide, e.g.
+      serve_decide.py or a hosted Jev API). Same fail-open behavior as
+      sglang. Only this engine serves images natively.
 
     Raises:
         ValueError: unknown engine name.
@@ -1831,6 +2062,7 @@ def create_engine(name: str | None = None) -> Any:
             local fallback.
         ImportError: local requested but the heavy deps are not installed.
     """
+    from .jev_backend import JevError
     from .jevk5_backend import JevK5Error
     from .sglang_backend import SGLangError
 
@@ -1847,8 +2079,8 @@ def create_engine(name: str | None = None) -> Any:
                 "the local GLiClass engine needs torch + transformers + "
                 "gliclass, which are not installed. Either install them "
                 "(pip install 'systemone[local]') or serve a remote engine "
-                "instead (SYSTEMONE_ENGINE=sglang|jevk5 with its base URL "
-                "set) or the ONNX judge (SYSTEMONE_ENGINE=onnx with "
+                "instead (SYSTEMONE_ENGINE=sglang|jevk5|jev with its base "
+                "URL set) or the ONNX judge (SYSTEMONE_ENGINE=onnx with "
                 "onnxruntime installed)."
             )
         return SystemOne(model_name=os.environ.get("SYSTEMONE_MODEL"))
@@ -1897,6 +2129,10 @@ def create_engine(name: str | None = None) -> Any:
                 return _local()
             raise
         return RerankBackend(enc.score, model_name=enc.model_id + " [onnx]")
+    if sel == "jev" or (os.environ.get("JEV_URL") or "").strip():
+        found = _remote("jev", JevDecideBackend, JevError, "JEV_URL")
+        if found is not None:
+            return found
     if sel == "sglang" or (os.environ.get("SGLANG_BASE_URL") or "").strip():
         found = _remote("sglang", SGLangBackend, SGLangError, "SGLANG_BASE_URL")
         if found is not None:
@@ -1928,8 +2164,8 @@ def serve(
     Args:
         engine: explicit engine instance (wins over engine_name; tests use
             this to inject stubs).
-        engine_name: "auto" | "local" | "sglang" (see create_engine);
-            unset -> $SYSTEMONE_ENGINE, default "auto".
+        engine_name: "auto" | "local" | "sglang" | "jevk5" | "onnx" | "jev"
+            (see create_engine); unset -> $SYSTEMONE_ENGINE, default "auto".
     """
     engine = engine or create_engine(engine_name)
     server = ThreadingHTTPServer(("127.0.0.1", port), ShimHandler)
@@ -1983,10 +2219,11 @@ def main() -> None:
         choices=list(ENGINE_CHOICES),
         default=None,
         help=(
-            "decision engine to serve: auto (SGLang, then JevK5, then "
-            "local), local (GLiClass), sglang, jevk5, or onnx (local "
-            "ONNX cross-encoder judge). Remotes fail open to local when "
-            "unreachable. Default: $SYSTEMONE_ENGINE or auto."
+            "decision engine to serve: auto (JEV, then SGLang, then "
+            "JevK5, then local), local (GLiClass), sglang, jevk5, onnx "
+            "(local ONNX cross-encoder judge), or jev (JEV decision "
+            "model). Remotes fail open to local when unreachable. "
+            "Default: $SYSTEMONE_ENGINE or auto."
         ),
     )
     parser.add_argument(
