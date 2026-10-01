@@ -151,6 +151,7 @@ from .metrics import summarize as summarize_metrics
 REGISTRY_PATH = os.path.join(os.path.dirname(__file__), "model_registry.json")
 CALIBRATION_PATH = os.path.join(os.path.dirname(__file__), "calibration.json")
 TOOL_REGISTRY_PATH = os.path.join(os.path.dirname(__file__), "tool_registry.json")
+OPENAPI_PATH = os.path.join(os.path.dirname(__file__), "openapi.json")
 
 COST_BIAS_POLICIES = {
     "economy": "Aggressively prefer the cheapest tier that is still sufficiently capable.",
@@ -1639,6 +1640,12 @@ class ShimHandler(BaseHTTPRequestHandler):
                 "model": self.server.engine.model_name,
                 "backend": getattr(self.server, "engine_backend", "custom"),
             })
+        elif self.path == "/openapi.json":
+            spec = getattr(self.server, "openapi_spec", None)
+            if isinstance(spec, dict):
+                self._send_json(200, spec)
+            else:
+                self._send_json(500, {"error": "openapi spec unavailable"})
         else:
             self._send_json(404, {"error": "not found"})
 
@@ -1881,6 +1888,13 @@ def serve(
     server.registry = reg  # type: ignore[attr-defined]
     server.calibration = load_calibration(CALIBRATION_PATH)  # type: ignore[attr-defined]
     server.tools = load_tool_registry(TOOL_REGISTRY_PATH)  # type: ignore[attr-defined]
+    # OpenAPI document served at GET /openapi.json (fail-open: a missing or
+    # invalid spec degrades to a 500 on that path only, never breaks serve()).
+    try:
+        with open(OPENAPI_PATH, "r", encoding="utf-8") as f:
+            server.openapi_spec = json.load(f)  # type: ignore[attr-defined]
+    except Exception:
+        server.openapi_spec = None  # type: ignore[attr-defined]
     # Per-answer-type temperature map for the decision path (fail-open:
     # absent or pooled-only calibration.json leaves the engine untouched).
     server.type_calibration = None  # type: ignore[attr-defined]

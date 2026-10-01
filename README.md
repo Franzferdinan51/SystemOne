@@ -326,6 +326,8 @@ you select (`--engine` flag overrides the env var):
 `GET /healthz` reports the live choice (`{"ok": true, "model": ...,
 "backend": "sglang"|"hybrid"|"local"|"custom"}`), and `systemone status`
 prints it. Every failure path stays fail-open, per the house rule.
+`GET /openapi.json` serves the machine-readable API spec
+(`systemone/openapi.json`, covered by a live parity test).
 
 **Slim install, heavy engine optional.** The base package is numpy-only:
 `SGLangBackend`, the shim's SGLang mode, the CLI's shim commands, and
