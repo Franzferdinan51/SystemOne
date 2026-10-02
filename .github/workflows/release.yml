@@ -1,0 +1,96 @@
+name: release
+
+# Tag a release: git tag v0.2.0 && git push origin v0.2.0
+# Builds wheel+sdist, attests provenance with Sigstore, generates an SBOM,
+# publishes to PyPI via trusted publishing (configure the PyPI project
+# first: Settings > Publishing > add this repo/workflow), and drafts a
+# GitHub Release carrying the artifacts + SBOM.
+#
+# NOTE: the PyPI step needs a one-time setup on pypi.org (pending
+# publisher for Franzferdinan51/SystemOne, workflow release.yml). Until
+# then it fails while the GitHub Release still ships.
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write      # GitHub Release
+  id-token: write      # Sigstore + PyPI trusted publishing
+  attestations: write  # build provenance
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: python -m pip install build
+      - run: python -m build
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist
+          path: dist/
+
+  attest:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist/
+      - uses: actions/attest-build-provenance@v2
+        with:
+          subject-path: "dist/*"
+
+  sbom:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist/
+      - uses: anchore/sbom-action@v0
+        with:
+          path: ./dist
+          format: spdx-json
+          output-file: sbom.spdx.json
+      - uses: actions/upload-artifact@v4
+        with:
+          name: sbom
+          path: sbom.spdx.json
+
+  github-release:
+    needs: [attest, sbom]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist/
+      - uses: actions/download-artifact@v4
+        with:
+          name: sbom
+          path: ./
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            dist/*
+            sbom.spdx.json
+          generate_release_notes: true
+
+  pypi:
+    needs: [attest, sbom]
+    runs-on: ubuntu-latest
+    environment: pypi
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist/
+      - uses: pypa/gh-action-pypi-publish@release/v1

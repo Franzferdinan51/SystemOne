@@ -11,10 +11,17 @@ import sys
 import threading
 import urllib.request
 
+import pytest
+
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
 
 import systemone  # noqa: E402
-from systemone import HybridBackend, SGLangBackend, SGLangError  # noqa: E402
+from systemone import (  # noqa: E402
+    CascadeBackend,
+    HybridBackend,
+    SGLangBackend,
+    SGLangError,
+)
 from systemone import shim as shim_module  # noqa: E402
 from systemone.client import SystemOneClient  # noqa: E402
 from systemone.shim import (  # noqa: E402
@@ -256,6 +263,73 @@ def test_hybrid_escalation_failure_fails_open():
     assert out["_meta"]["backend"] == "hybrid/local"
     assert "boom" in out["_meta"]["escalation_error"]
     assert out["action"]["choice"] == "up"  # local answers preserved
+
+
+def test_cascade_stays_cheap_when_confident():
+    cheap = StubEngine(confidence=0.95)
+    pricey = StubEngine(confidence=0.99)
+    cascade = CascadeBackend([cheap, pricey], escalate_below=0.6,
+                             costs=[0.1, 1.0])
+    out = cascade.systemone("state", _questions())
+    assert cheap.calls == 1 and pricey.calls == 0
+    assert out["_meta"]["backend"] == "cascade"
+    assert out["_meta"]["stage"] == 0
+    assert out["_meta"]["escalated"] is False
+    assert out["_meta"]["cost_spent"] == pytest.approx(0.1)
+
+
+def test_cascade_escalates_through_stages():
+    weak = StubEngine(confidence=0.2)
+    mid = StubEngine(confidence=0.5)
+    strong = StubEngine(confidence=0.99)
+    cascade = CascadeBackend([weak, mid, strong], escalate_below=0.6,
+                             costs=[0.1, 0.3, 1.0])
+    out = cascade.systemone("state", _questions())
+    assert (weak.calls, mid.calls, strong.calls) == (1, 1, 1)
+    assert out["_meta"]["stage"] == 2
+    assert out["_meta"]["stages_run"] == 3
+    assert out["_meta"]["cost_spent"] == pytest.approx(1.4)
+    assert out["_meta"]["min_confidence"] == pytest.approx(0.99)
+
+
+def test_cascade_budget_stops_escalation():
+    weak = StubEngine(confidence=0.2)
+    strong = StubEngine(confidence=0.99)
+    cascade = CascadeBackend([weak, strong], escalate_below=0.6,
+                             budget=0.5, costs=[0.1, 1.0])
+    out = cascade.systemone("state", _questions())
+    assert strong.calls == 0  # 0.1 + 1.0 exceeds the 0.5 budget
+    assert out["_meta"]["budget_exhausted"] is True
+    assert out["_meta"]["min_confidence"] == pytest.approx(0.2)
+    # ...but a fitting budget escalates
+    strong.calls = 0
+    cascade = CascadeBackend([weak, strong], escalate_below=0.6,
+                             budget=1.5, costs=[0.1, 1.0])
+    out = cascade.systemone("state", _questions())
+    assert strong.calls == 1
+    assert out["_meta"]["budget_exhausted"] is False
+
+
+def test_cascade_stage_failure_fails_open():
+    weak = StubEngine(confidence=0.2)
+    cascade = CascadeBackend([weak, FailingSGLang()], escalate_below=0.6)
+    out = cascade.systemone("state", _questions())
+    assert out["_meta"]["stage"] == 0
+    assert "boom" in out["_meta"]["escalation_error"]
+    assert out["action"]["choice"] == "up"
+
+
+def test_cascade_validation():
+    with pytest.raises(ValueError):
+        CascadeBackend([])
+    with pytest.raises(ValueError):
+        CascadeBackend([StubEngine()], escalate_below=1.5)
+    with pytest.raises(ValueError):
+        CascadeBackend([StubEngine(), StubEngine()], costs=[0.1])
+    with pytest.raises(ValueError):
+        CascadeBackend([StubEngine()], costs=[-1.0])
+    with pytest.raises(ValueError):
+        CascadeBackend([StubEngine()], budget=-1.0)
 
 
 def test_hybrid_non_sglang_escalation_error_fails_open():

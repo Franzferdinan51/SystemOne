@@ -7,7 +7,6 @@ forward pass is a canned Clef-shaped ``systemone()`` response.
 
 import base64
 import io
-import json
 import os
 import sys
 import urllib.request

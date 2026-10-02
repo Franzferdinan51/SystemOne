@@ -16,7 +16,6 @@ from systemone import (
     StallGuard,
     SystemOneError,
     validate_choice,
-    validate_distribution,
     with_abstain,
 )
 

@@ -53,6 +53,18 @@ point). See [The agent loop](#the-agent-loop-see--decide--act).
   caps, JSON-only calibrators (the pickle fallback is gone), opt-in
   `SYSTEMONE_API_TOKEN` auth on POST routes, Prometheus `/metrics`, and
   `X-Request-ID` tracing on every response. See [Operations](#operations-auth-limits-metrics).
+- **Ecosystem pull: cascades, ensembles, conformal sets** — FrugalGPT-style
+  budgeted `CascadeBackend`, `EnsembleBackend` (average / extremized /
+  vote / RRF / Borda fusion), `SelfConsistent` majority vote,
+  MAPIE-style conformal prediction sets, RouteLLM-style cost/quality
+  threshold picking, OpenRouter-style route `sort`/`fallbacks`/`explore`,
+  a bulk `/v1/systemone/batch` endpoint, an exact-match decision cache, a
+  hash-chained audit log, PII scrubbing, label-free drift monitoring
+  (PSI + CBPE), honest A/B metrics (McNemar, bootstrap CIs, nDCG, F1),
+  and a 14-task red-team battery (14/14 vs the live ONNX judge). See
+  [Cascades, ensembles & conformal
+  sets](#cascades-ensembles--conformal-sets) and
+  [Operations](#operations-auth-limits-metrics).
 
 ### September 2026
 
@@ -287,13 +299,20 @@ the probe.
   (one-shot Jev-style judgments) on the in-process engine, `serve` to run
   the shim.
 - **`client.py`** — `SystemOneClient`: stdlib HTTP client for the shim
-  (`route`, `decide`, `decisions`, `status`, `rank_plans`); transport
-  failures surface as `ShimError`.
+  (`route`, `decide`, `decisions`, `status`, `rank_plans`, `permute`,
+  `batch`); transport failures surface as `ShimError`.
 - **`calibration.py`** — `TemperatureCalibrator`, `PlattCalibrator`,
   `IsotonicCalibrator`, `CalibratedScorer`, per-type temperature maps,
-  `expected_calibration_error()`. Loaders are JSON-only.
+  `expected_calibration_error()`, split-conformal APS thresholds
+  (`fit_conformal_threshold` / `conformal_set`), and RouteLLM-style
+  cost/quality threshold picking (`route_threshold_for_target` /
+  `quality_cost_frontier`). Loaders are JSON-only.
 - **`metrics.py`** — calibration metrics (`ece` / `brier` / `nll` / `aurc` /
-  selective accuracy + summarize tables).
+  selective accuracy + summarize tables), rank metrics (`ndcg_at_k`,
+  `reciprocal_rank`), `macro_f1`, `failure_auroc`, Brier decomposition,
+  reliability curves, paired A/B significance (`mcnemar`,
+  `paired_bootstrap_ci`), and label-free monitoring (`psi`,
+  `estimated_accuracy`).
 - **`mcp_server.py`** — MCP tools over stdio for agent stacks:
   `typesafe_ask` (Jev-compatible `state` + `questions` interface with
   `{"id", "type", "instructions", "criteria"}` questions and
@@ -319,7 +338,8 @@ the probe.
   `/openapi.json` — see [HTTP endpoints](#http-endpoints).
 - **`sglang_backend.py`** — `SGLangBackend` (SGLang `/v1/decisions` judge,
   drop-in for `SystemOne`), `HybridBackend` (local-first, whole-call
-  SGLang escalation), and `decide_fn_for` (any engine → loop judge).
+  SGLang escalation), `CascadeBackend` (FrugalGPT-style N-stage budgeted
+  cascade), and `decide_fn_for` (any engine → loop judge).
 - **`jev_backend.py`** — `JevDecideBackend`: JEV decision models over
   `POST /v1/decide` (hosted, vLLM-raw client-side math, System 2 chat).
 - **`jevk5_backend.py`** — `JevK5ServerBackend`: judge via a `jevk5-serve`
@@ -332,10 +352,16 @@ the probe.
 - **`rerank_backend.py`** — `RerankBackend`: cross-encoder judge over any
   score function; `OnnxCrossEncoder`: CPU-only ONNX cross-encoder.
 - **`loop.py`** — `DecisionLoop`: the one See > Decide > Act agent loop.
-- **`rotation.py`** — `RotationAveraged`: engine wrapper averaging choice
-  judgments over cyclic option rotations (kills position bias).
+- **`rotation.py`** — engine wrappers: `RotationAveraged` (choice
+  judgments averaged over cyclic option rotations, kills position bias),
+  `ConformalChoice` (prediction sets with fitted coverage),
+  `SelfConsistent` (majority vote over sampled judgments + agreement),
+  `EnsembleBackend` (multi-engine fusion: average / extremized / vote /
+  RRF / Borda).
 - **`scoring.py`** — route scoring, calibration application, model/tool
-  ranking, LM Studio inventory (thread-safe refresher).
+  ranking (`sort` by utility/quality/cost/latency), rank fusion
+  (`rrf_fuse`, `borda_fuse`, `extremized_average`), LM Studio inventory
+  (thread-safe refresher).
 - **`jevbench.py`** — JevBench-split scoring adapter (`score_item` /
   `run_file`); CLI: `systemone jevbench --items`.
 - **`bench_2048.py`** — headless 2048 decision benchmark over the loop
@@ -547,6 +573,57 @@ lead on reasoning-heavy MMLU-Pro/BBH/GPQA. Scoring this box on the
 future work — our JevBench adapter (`systemone/jevbench.py`) is the
 template.
 
+## Cascades, ensembles & conformal sets
+
+Pulled from the wider decision-model ecosystem (FrugalGPT, RouteLLM,
+MAPIE, forecast aggregation, hybrid search) and adapted to typed
+decisions — all torch-free, all composable with any engine:
+
+- **Budgeted cascade** — `CascadeBackend(stages, escalate_below, budget,
+  costs)` judges cheap-first and escalates whole calls while confidence
+  is under the bar and the budget holds. `_meta` records the answering
+  stage, cost spent, and whether the budget stopped an escalation; a
+  failing stage fails open to the last good answers.
+- **Honest thresholds** — `route_threshold_for_target(rows, target)`
+  sweeps the RouteLLM α (route weak iff P(strong wins) < α) and returns
+  the cheapest α holding `target` × strong-model quality, plus weak
+  share and cost share; `quality_cost_frontier` plots the tradeoff.
+  Fit α offline on labeled cascade rows instead of guessing 0.6.
+- **Ensembles** — `EnsembleBackend(engines, strategy)` fuses judges:
+  `average` (linear opinion pool), `extremized` (correlated-error
+  correction, usually beats the mean), `vote` (majority + agreement),
+  `rrf` / `borda` (rank fusion picks the winner, honest mean
+  probabilities reported, raw scores in `fusion_scores`). Noul takes the
+  mean probability, score the mean distribution.
+- **Self-consistency** — `SelfConsistent(engine, samples, seed)` samples
+  choice judgments under shuffled option orders and takes the majority
+  winner; `agreement` flags confident-but-divided calls for abstention.
+- **Conformal sets** — `fit_conformal_threshold(records, alpha)` fits a
+  split-conformal APS threshold from labeled rows; `ConformalChoice`
+  wraps any engine and adds `prediction_set` + `coverage` to every
+  choice answer: the set contains gold with marginal probability ≥
+  1 − α on exchangeable items, no distributional assumptions.
+- **Honest A/B** — `mcnemar` (exact <25 discordant pairs, else χ²),
+  `paired_bootstrap_ci`, `failure_auroc`, Brier decomposition, and
+  reliability curves in `systemone/metrics.py` decide whether engine B
+  is really better; `ndcg_at_k` / `reciprocal_rank` / `macro_f1` score
+  rank-plans, rerank, and classification evals in the Clef-table
+  conventions.
+
+```python
+from systemone import CascadeBackend, ConformalChoice, SGLangBackend, SystemOne
+
+cheap, strong = SystemOne(), SGLangBackend()
+judge = ConformalChoice.fit(
+    CascadeBackend([cheap, strong], escalate_below=0.6,
+                   budget=1.5, costs=[0.1, 1.0]),
+    records, alpha=0.1)
+out = judge.systemone("Should we ship this?", [
+    {"name": "ship", "type": "choice",
+     "options": ["yes", "no", "needs-review"]}])
+print(out["ship"]["choice"], out["ship"]["prediction_set"])
+```
+
 ## The agent loop: See > Decide > Act
 
 `systemone/loop.py` is the one loop every agentic use shares. Implement
@@ -674,9 +751,28 @@ engine — otherwise you're measuring the cache, not the model.
   GETs (`/healthz`, `/metrics`, …) stay open for probes and scrapers.
 - **Request limits** — bodies over 2 MB get 413; `/v1/decisions` and
   `/v1/systemone` cap at 64 questions per request; rank-plans caps at 32
-  plans. Constants live in `systemone/patterns.py`
-  (`MAX_BODY_BYTES`, `MAX_QUESTIONS_PER_REQUEST`,
-  `MAX_PLANS_PER_REQUEST`).
+  plans; `/v1/systemone/batch` caps at 32 items. Constants live in
+  `systemone/patterns.py` (`MAX_BODY_BYTES`,
+  `MAX_QUESTIONS_PER_REQUEST`, `MAX_PLANS_PER_REQUEST`,
+  `MAX_BATCH_ITEMS_PER_REQUEST`).
+- **Decision cache (opt-in)** — `SYSTEMONE_CACHE_TTL` seconds (>0 enables)
+  and `SYSTEMONE_CACHE_MAX` entries (default 512) turn on an exact-match
+  cache for `/v1/systemone` and batch items: identical state+questions
+  judge once per window. Hits return `"cached": true` with
+  `latency_ms: 0.0` and never touch the engine.
+- **Audit chain (opt-in)** — `SYSTEMONE_AUDIT_CHAIN=1` hash-chains the
+  JSONL decision log (`audit_seq` / `audit_prev` / `audit_hash` per
+  record); `systemone.shim.verify_audit_chain(path)` replays and verifies
+  it, naming the first tampered line.
+- **PII scrubbing (opt-in)** — `SYSTEMONE_SCRUB_PII=1` redacts emails,
+  phones, SSNs, card numbers, API keys, and IPv4 addresses (typed
+  `[REDACTED_*]` tokens) before the state reaches the judge; responses
+  report `{"pii": {"kinds", "count"}}`. High precision, modest recall —
+  a safety net, not DLP.
+- **Label-free monitoring** — `systemone.metrics.psi` (Evidently-style
+  drift: <0.1 none, >0.2 significant) over confidences or label rates,
+  and `estimated_accuracy` (NannyML CBPE: mean max-probability, valid
+  only when calibrated) estimate production health before labels arrive.
 - **Metrics** — `GET /metrics` serves Prometheus counters
   (`systemone_requests_total`, `systemone_request_latency_ms_sum`) by
   endpoint and status.
@@ -701,6 +797,7 @@ The shim (`:8765`) serves, all documented in `GET /openapi.json`:
 | `POST /v1/systemone/rank-plans` | rank candidate plans for a task |
 | `POST /v1/systemone/decide` | single Jev-shaped decision via the sidecar (fail-open fallback) |
 | `POST /v1/systemone/permute` | permutation probe: one choice under `n_perm` orders, stability + spread |
+| `POST /v1/systemone/batch` | bulk judging: up to 32 TypeSafe bodies, per-item `{status, ...}` results |
 
 The sidecar (`:8079`) serves `POST /v1/jeff1/decide`,
 `/v1/jeff1/rank-plans`, `/v1/jeff1/second-opinion`, and `GET /healthz`.
@@ -872,6 +969,12 @@ working unchanged:
   (`est_steps × routed-tier cost / 100`), each with `p_success`,
   `cost_penalty`, `est_steps`. Execute the top plan unless pinned; log the
   whole ranking.
+- **Per-request route controls** (OpenRouter/LiteLLM-style): `sort`
+  reorders `ranked_models` (`utility` default, `quality`, `cost`,
+  `latency`); `fallbacks` (default 2) attaches that many ordered failover
+  model ids (winner excluded); `explore` (default 0) epsilon-greedily
+  swaps the winner for a uniform top-3 pick and sets `explored`.
+  All additive — defaults reproduce the legacy route exactly.
 
 ### Calibration battery (regression suite)
 
@@ -882,6 +985,8 @@ working unchanged:
 python3 systemone/battery/run.py --base-url http://127.0.0.1:8765  # full asserts
 python3 systemone/battery/run.py --mode live --base-url http://127.0.0.1:8765
 python3 systemone/battery/fit.py --base-url http://127.0.0.1:18765  # -> calibration.json
+python3 systemone/battery/run.py --tasks systemone/battery/redteam.jsonl  # 14 adversarial flip attempts
+```
 ```
 
 ### Latest full run (2026-09-24)

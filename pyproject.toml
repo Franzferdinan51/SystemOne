@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "systemone"
-version = "0.1.0"
+version = "0.2.0"
 description = "Local, keyless Jev-style typed decisions — choice, score, noul — on GLiClass or SGLang"
 readme = "README.md"
 requires-python = ">=3.10"
@@ -60,9 +60,20 @@ systemone-acp = "systemone.acp_server:main"
 include = ["systemone*"]
 
 [tool.setuptools.package-data]
-# The shim/sidecar load these via __file__; without this stanza wheels
-# ship without them and pip installs break at runtime (audit 2026-10-02).
-systemone = ["*.json"]
+# The shim/sidecar/battery load these via __file__; without this stanza
+# wheels ship without them and pip installs break at runtime
+# (audit 2026-10-02; battery/*.jsonl added 2026-10-02 — installed
+# `systemone battery` could not find its tasks).
+systemone = ["*.json", "battery/*.json", "battery/*.jsonl"]
 
 [tool.pytest.ini_options]
 markers = ["slow: loads real model weights (opt-in; deselect with -m 'not slow')"]
+
+[tool.ruff]
+target-version = "py310"
+
+[tool.ruff.lint]
+# F-only gate: undefined names, unused imports, real bugs. The tree is
+# not format-clean (65 files predate ruff) and full pyupgrade (UP) /
+# bugbear (B) would churn it, so those stay off. Revisit per module.
+select = ["F"]

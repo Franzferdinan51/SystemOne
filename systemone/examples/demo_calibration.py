@@ -11,11 +11,12 @@ import sys
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
 
+from typing import Dict
+
 import numpy as np
 
 from systemone import SystemOne
 from systemone.calibration import (
-    CalibrationExample,
     TemperatureCalibrator,
     expected_calibration_error,
     softmax,

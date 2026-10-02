@@ -37,6 +37,10 @@ import hashlib
 import json
 import os
 import sys
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from systemone.api import SystemOne
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
 

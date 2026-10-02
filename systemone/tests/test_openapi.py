@@ -61,6 +61,7 @@ def test_spec_parses_and_lists_all_routes():
         "/v1/decide", "/v1/decide/info",
         "/v1/systemone/route", "/v1/systemone/rank-plans",
         "/v1/systemone/decide", "/v1/systemone/permute",
+        "/v1/systemone/batch",
     }
     for path, item in spec["paths"].items():
         for method, op in item.items():
@@ -98,7 +99,8 @@ def test_live_parity_every_spec_path_served():
         # POST paths route (malformed probes fail loudly, never 404).
         for path in ("/v1/systemone", "/v1/decisions",
                      "/v1/systemone/route", "/v1/systemone/rank-plans",
-                     "/v1/systemone/decide", "/v1/systemone/permute"):
+                     "/v1/systemone/decide", "/v1/systemone/permute",
+                     "/v1/systemone/batch"):
             status, _ = _request(port, "POST", path, {})
             assert status != 404, path
         # Unknown paths still 404 on both verbs.

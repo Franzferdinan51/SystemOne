@@ -457,3 +457,118 @@ def test_resolve_candidates_env_override(monkeypatch):
 
     monkeypatch.setenv("SYSTEMONE_MODEL", "   ")
     assert _resolve_candidates(None) == MODEL_CANDIDATES
+
+
+# -- sort / fallbacks / explore (OpenRouter-style controls) ----------------
+
+
+def _rich_registry():
+    def tier(mid, cost, qe, qb, qh, lat):
+        return {"model_id": mid, "description": mid,
+                "models": [{"model_id": mid, "available": True, "cost": cost,
+                            "quality": {"economy": qe, "balanced": qb,
+                                        "heavy": qh},
+                            "latency_ms_p50": lat}]}
+    return {
+        "economy": tier("cheap-1", 0.2, 0.7, 0.3, 0.1, 100),
+        "balanced": tier("mid-1", 0.5, 0.4, 0.8, 0.4, 400),
+        "heavy": tier("big-1", 0.9, 0.1, 0.4, 0.9, 900),
+    }
+
+
+def _rich_scoring():
+    return {"calibration": None, "tools": [], "registry": _rich_registry()}
+
+
+def _rich_candidates():
+    return candidates_from_registry(_rich_registry())
+
+
+def test_route_sort_orders_ranked_models():
+    by_cost = route_decision(StubEngine(), "triage this ticket",
+                             _rich_candidates(), "balanced",
+                             scoring=_rich_scoring(), sort="cost")
+    costs = [m["cost"] for m in by_cost["ranked_models"]]
+    assert costs == sorted(costs)
+    assert by_cost["ranked_models"][0]["model_id"] == "cheap-1"
+    by_lat = route_decision(StubEngine(), "triage this ticket",
+                            _rich_candidates(), "balanced",
+                            scoring=_rich_scoring(), sort="latency")
+    lats = [m["latency_ms_p50"] for m in by_lat["ranked_models"]]
+    assert lats == sorted(lats)
+    by_qual = route_decision(StubEngine(), "triage this ticket",
+                             _rich_candidates(), "balanced",
+                             scoring=_rich_scoring(), sort="quality")
+    quals = [m["quality"] for m in by_qual["ranked_models"]]
+    assert quals == sorted(quals, reverse=True)
+    # default utility sort still works
+    by_util = route_decision(StubEngine(), "triage this ticket",
+                             _rich_candidates(), "balanced",
+                             scoring=_rich_scoring())
+    assert len(by_util["ranked_models"]) == 3
+
+
+def test_route_fallbacks_exclude_winner():
+    route = route_decision(StubEngine(), "triage this ticket",
+                           _rich_candidates(), "balanced",
+                           scoring=_rich_scoring())
+    assert len(route["fallbacks"]) == 2
+    assert route["model_id"] not in route["fallbacks"]
+    assert route["explored"] is False
+    route = route_decision(StubEngine(), "triage this ticket",
+                           _rich_candidates(), "balanced",
+                           scoring=_rich_scoring(), fallbacks=0)
+    assert route["fallbacks"] == []
+
+
+def test_route_explore_is_deterministic_with_rng():
+    import random
+
+    mk = lambda seed: route_decision(
+        StubEngine(), "triage this ticket", _rich_candidates(), "balanced",
+        scoring=_rich_scoring(), explore=1.0, rng=random.Random(seed))
+    first, second = mk(0), mk(0)
+    assert first["model_id"] == second["model_id"] == "cheap-1"
+    assert first["explored"] is True
+    assert "Exploration roll" in first["rationale"]
+    assert first["tier"] == "economy"
+    assert first["model_id"] in [m["model_id"]
+                                 for m in first["ranked_models"][:3]]
+    # a roll that keeps the winner still notes it, without flagging
+    kept = mk(7)
+    assert kept["explored"] is False
+    assert "Exploration roll" in kept["rationale"]
+
+
+def test_route_decision_rejects_bad_controls():
+    with pytest.raises(ValueError):
+        route_decision(StubEngine(), "x", _rich_candidates(), "balanced",
+                       scoring=_rich_scoring(), sort="vibes")
+    with pytest.raises(ValueError):
+        route_decision(StubEngine(), "x", _rich_candidates(), "balanced",
+                       scoring=_rich_scoring(), fallbacks=99)
+    with pytest.raises(ValueError):
+        route_decision(StubEngine(), "x", _rich_candidates(), "balanced",
+                       scoring=_rich_scoring(), explore=1.5)
+
+
+def test_http_route_sort_and_validation():
+    server, t = _serve_stub()
+    port = server.server_address[1]
+    try:
+        status, payload = _post(port, "/v1/systemone/route",
+                                {"task": "triage this ticket", "sort": "cost",
+                                 "fallbacks": 1})
+        assert status == 200
+        assert payload["route"]["fallbacks"] == []
+        for body in ({"task": "x", "sort": "vibes"},
+                     {"task": "x", "fallbacks": -1},
+                     {"task": "x", "fallbacks": 2.5},
+                     {"task": "x", "explore": 2.0},
+                     {"task": "x", "explore": "lots"}):
+            status, payload = _post(port, "/v1/systemone/route", body)
+            assert status == 400, body
+            assert "error" in payload
+    finally:
+        server.shutdown()
+        t.join(timeout=5)

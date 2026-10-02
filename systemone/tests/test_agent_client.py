@@ -136,6 +136,21 @@ def test_client_permute(monkeypatch):
     assert body["question"]["type"] == "choice"
 
 
+def test_client_batch(monkeypatch):
+    payload = {"results": [{"status": 200, "answers": {}},
+                            {"status": 400, "error": "bad"}],
+               "model": "stub", "n_items": 2}
+    seen = _install_urlopen(
+        monkeypatch, {("POST", "/v1/systemone/batch"): payload})
+    items = [{"state": "a", "questions": {}}, {"state": "b"}]
+    out = SystemOneClient(BASE).batch(items)
+    assert out["n_items"] == 2
+    assert out["results"][1]["status"] == 400
+    method, path, body = seen[0]
+    assert (method, path) == ("POST", "/v1/systemone/batch")
+    assert body["items"] == items
+
+
 def test_client_status_ok(monkeypatch):
     routes = {
         ("GET", "/healthz"): {"ok": True, "model": "fake-engine"},
