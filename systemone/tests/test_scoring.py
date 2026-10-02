@@ -679,3 +679,73 @@ def test_tuning_missing_file_degrades_gracefully(monkeypatch, tmp_path):
         assert ranked
     finally:
         scoring.reset_tuning()
+
+
+# -- permute probe ----------------------------------------------------------------------------
+
+
+def _permute_body(**kw):
+    body = {
+        "state": "pick one",
+        "question": {"type": "choice", "instructions": "Pick.",
+                     "criteria": {"a": "A", "b": "B", "c": "C"}},
+        "n_perm": 6,
+        "seed": 0,
+    }
+    body.update(kw)
+    return body
+
+
+def test_permute_http_roundtrip():
+    engine = ScoringStubEngine()  # first option wins: order-sensitive
+    server = _serve_on_temp_port(engine)
+    port = server.server_address[1]
+    try:
+        status, body = _post(port, "/v1/systemone/permute", _permute_body())
+        assert status == 200
+        assert len(body["runs"]) == 6
+        assert body["runs"][0]["order"] == ["a", "b", "c"]
+        assert body["runs"][0]["choice"] == "a"
+        for run in body["runs"]:
+            assert abs(sum(run["probabilities"].values()) - 1.0) < 1e-9
+            assert set(run["probabilities"]) == {"a", "b", "c"}
+        assert body["argmax_stable"] is False  # stub follows the order
+        assert set(body["spread"]) == {"a", "b", "c"}
+        assert all(0.0 <= v <= 1.0 for v in body["spread"].values())
+        assert body["model"] == "stub"
+        assert "latency_ms" in body
+    finally:
+        server.shutdown()
+
+
+def test_permute_is_deterministic_per_seed():
+    engine = ScoringStubEngine()
+    server = _serve_on_temp_port(engine)
+    port = server.server_address[1]
+    try:
+        _, first = _post(port, "/v1/systemone/permute", _permute_body())
+        _, second = _post(port, "/v1/systemone/permute", _permute_body())
+        assert first["runs"] == second["runs"]
+        _, other = _post(port, "/v1/systemone/permute",
+                         _permute_body(seed=99))
+        assert other["runs"] != first["runs"]
+    finally:
+        server.shutdown()
+
+
+def test_permute_http_rejects_bad_bodies():
+    engine = ScoringStubEngine()
+    server = _serve_on_temp_port(engine)
+    port = server.server_address[1]
+    try:
+        for bad in ({"state": "x"},  # no question
+                    _permute_body(n_perm=1),
+                    _permute_body(n_perm=33),
+                    _permute_body(n_perm="8"),
+                    _permute_body(question={"type": "noul",
+                                            "instructions": "x?"})):
+            status, body = _post(port, "/v1/systemone/permute", bad)
+            assert status == 400, bad
+            assert "error" in body
+    finally:
+        server.shutdown()

@@ -45,6 +45,11 @@ Endpoints:
                               sidecar when reachable (backend "decider"),
                               else answer locally with the GLiClass engine
                               (backend "fallback", fail-open)
+    POST /v1/systemone/permute
+                              permutation-robustness probe (Kev-style):
+                              re-run one choice question under n_perm
+                              option orders; reports per-order answers,
+                              argmax stability, and per-option spread
     GET  /healthz, /           liveness
 
 Request body for /v1/systemone (TypeSafe dialect):
@@ -106,6 +111,7 @@ import datetime
 import json
 import logging
 import os
+import random
 import re
 import sys
 import threading
@@ -2125,6 +2131,79 @@ class ShimHandler(BaseHTTPRequestHandler):
         })
         return 200, payload
 
+    def _handle_permute(self) -> tuple[int, Dict[str, Any]]:
+        """POST /v1/systemone/permute -> (status, payload).
+
+        Body: {"state", "question": {TypeSafe choice question},
+               "n_perm" (2-32, default 8), "seed" (default 0)}.
+        Re-runs the question under n_perm option orders (first the
+        given order, then seeded shuffles) against the serving engine
+        and reports per-order answers, argmax stability, and the
+        per-option probability spread — Kev's permutation probe
+        (kev.serve systemone_permute), engine-agnostic.
+        """
+        body = self._read_body()
+        if not isinstance(body, dict):
+            raise ValueError("request body must be a JSON object")
+        if "state" not in body:
+            raise ValueError("request must include 'state'")
+        raw_q = body.get("question")
+        if not isinstance(raw_q, dict):
+            raise ValueError("request must include a 'question' mapping")
+        n_perm = body.get("n_perm", 8)
+        if isinstance(n_perm, bool) or not isinstance(n_perm, int):
+            raise ValueError("'n_perm' must be an integer")
+        if not 2 <= n_perm <= 32:
+            raise ValueError("'n_perm' must be in 2..32")
+        seed = body.get("seed", 0)
+        if isinstance(seed, bool) or not isinstance(seed, int):
+            raise ValueError("'seed' must be an integer")
+        question = translate_question("permute", raw_q)
+        if question.get("type") != "choice":
+            raise ValueError("'question' must be a choice question")
+        options = list(question.get("options") or [])
+        if len(options) < 2:
+            raise ValueError("'question' needs >= 2 options")
+        state_text = state_to_text(body["state"])
+        if len(state_text) > MAX_STATE_CHARS:
+            state_text = state_text[:MAX_STATE_CHARS]
+        state_text = maybe_date_facts(state_text)
+
+        rng = random.Random(seed)
+        orders: List[List[str]] = [list(options)]
+        for _ in range(n_perm - 1):
+            order = list(options)
+            rng.shuffle(order)
+            orders.append(order)
+        runs: List[Dict[str, Any]] = []
+        t0 = time.perf_counter()
+        for order in orders:
+            answers = self.server.engine.systemone(
+                state_text, [{**question, "options": order}])
+            ans = answers.get("permute") or {}
+            probs = dict(ans.get("probabilities") or {})
+            choice = ans.get("choice") or (
+                max(probs, key=probs.get) if probs else None)
+            if choice is None:
+                raise ValueError("engine returned no choice answer")
+            runs.append({"order": order, "probabilities": probs,
+                         "choice": choice})
+        latency_ms = round((time.perf_counter() - t0) * 1000.0, 1)
+        spread = {opt: round(max(r["probabilities"].get(opt, 0.0)
+                                 for r in runs)
+                             - min(r["probabilities"].get(opt, 0.0)
+                                   for r in runs), 4)
+                  for opt in options}
+        return 200, {
+            "runs": runs,
+            "argmax_stable": len({r["choice"] for r in runs}) == 1,
+            "spread": spread,
+            "n_perm": n_perm,
+            "seed": seed,
+            "model": getattr(self.server.engine, "model_name", "?"),
+            "latency_ms": latency_ms,
+        }
+
     def do_GET(self) -> None:  # noqa: N802
         t0 = self._begin_request()
         try:
@@ -2213,12 +2292,19 @@ class ShimHandler(BaseHTTPRequestHandler):
                     "decide_type": payload.get("type"),
                     "backend": payload.get("backend"),
                 }
+            elif self.path == "/v1/systemone/permute":
+                status, payload = self._handle_permute()
+                extra = {
+                    "n_perm": payload.get("n_perm"),
+                    "argmax_stable": payload.get("argmax_stable"),
+                }
             else:
                 status = 404
                 payload = {
                     "error": "not found, POST /v1/decisions, /v1/decide, "
                              "/v1/systemone, /v1/systemone/route, "
-                             "/v1/systemone/rank-plans or /v1/systemone/decide"
+                             "/v1/systemone/rank-plans, /v1/systemone/decide, "
+                             "or /v1/systemone/permute"
                 }
         except BodyTooLarge as e:
             status, payload = 413, {"error": f"request too large: {e}"}

@@ -328,6 +328,8 @@ the probe.
 - **`rerank_backend.py`** — `RerankBackend`: cross-encoder judge over any
   score function; `OnnxCrossEncoder`: CPU-only ONNX cross-encoder.
 - **`loop.py`** — `DecisionLoop`: the one See > Decide > Act agent loop.
+- **`rotation.py`** — `RotationAveraged`: engine wrapper averaging choice
+  judgments over cyclic option rotations (kills position bias).
 - **`scoring.py`** — route scoring, calibration application, model/tool
   ranking, LM Studio inventory (thread-safe refresher).
 - **`jevbench.py`** — JevBench-split scoring adapter (`score_item` /
@@ -667,6 +669,7 @@ The shim (`:8765`) serves, all documented in `GET /openapi.json`:
 | `POST /v1/systemone/route` | cheapest sufficient tier + scored decision surface |
 | `POST /v1/systemone/rank-plans` | rank candidate plans for a task |
 | `POST /v1/systemone/decide` | single Jev-shaped decision via the sidecar (fail-open fallback) |
+| `POST /v1/systemone/permute` | permutation probe: one choice under `n_perm` orders, stability + spread |
 
 The sidecar (`:8079`) serves `POST /v1/jeff1/decide`,
 `/v1/jeff1/rank-plans`, `/v1/jeff1/second-opinion`, and `GET /healthz`.
