@@ -122,8 +122,25 @@ from .patterns import (
     BodyTooLarge,
     api_token_ok,
     check_body_length,
+    date_facts,
     validate_choice,
 )
+
+
+def maybe_date_facts(state_text: str) -> str:
+    """Append Kev-style date_facts when SYSTEMONE_DATE_FACTS=1.
+
+    Opt-in preprocessing (ported from Kev's with_date_facts): when the
+    state mentions two or more absolute dates, a "date_facts: ..." line
+    with the pairwise day counts is appended so the judge can use
+    stated day counts instead of subtracting dates itself.
+    """
+    if os.environ.get("SYSTEMONE_DATE_FACTS") != "1":
+        return state_text
+    facts = date_facts(state_text)
+    if not facts:
+        return state_text
+    return f"{state_text}\n\ndate_facts: {facts}"
 
 try:
     from .api import SystemOne
@@ -1098,6 +1115,7 @@ def translate_body(body: Dict[str, Any]) -> tuple[str, List[Dict[str, Any]]]:
     state_text = state_to_text(body.get("state", ""))
     if len(state_text) > MAX_STATE_CHARS:
         state_text = state_text[:MAX_STATE_CHARS]
+    state_text = maybe_date_facts(state_text)
     raw = body.get("questions") or {}
     if isinstance(raw, list):
         items = [
@@ -1252,6 +1270,7 @@ def translate_decisions_body(
     state_text = decisions_input_to_text(body.get("input", ""))
     if len(state_text) > MAX_STATE_CHARS:
         state_text = state_text[:MAX_STATE_CHARS]
+    state_text = maybe_date_facts(state_text)
     raw_questions = body.get("questions")
     if not isinstance(raw_questions, list) or not raw_questions:
         raise Unprocessable("'questions' must be a non-empty list")
@@ -1435,6 +1454,7 @@ def translate_decide_body(
     state_text, images = decide_state_parts(body.get("state"))
     if len(state_text) > MAX_STATE_CHARS:
         state_text = state_text[:MAX_STATE_CHARS]
+    state_text = maybe_date_facts(state_text)
     question = body.get("question")
     if not isinstance(question, str) or not question.strip():
         raise Unprocessable("request must include a non-empty 'question' string")
@@ -2064,6 +2084,7 @@ class ShimHandler(BaseHTTPRequestHandler):
         state_text = state_to_text(body["state"])
         if len(state_text) > MAX_STATE_CHARS:
             state_text = state_text[:MAX_STATE_CHARS]
+        state_text = maybe_date_facts(state_text)
 
         t0 = time.perf_counter()
         jeff1 = decide_via_jeff1({

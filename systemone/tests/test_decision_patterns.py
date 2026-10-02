@@ -133,3 +133,57 @@ def test_resolve_revision_precedence(monkeypatch):
     monkeypatch.setenv("SYSTEMONE_REVISION", "env-rev")
     assert resolve_revision(None) == "env-rev"
     assert resolve_revision("explicit") == "explicit"  # explicit wins
+
+
+# -- date_facts (ported from Kev) -------------------------------------------
+
+
+def test_date_facts_pairs_absolute_dates():
+    from systemone.patterns import date_facts
+
+    out = date_facts("Signed July 22, 2026, delivered August 3, 2026.")
+    assert out == "August 3, 2026 is 12 days after July 22, 2026."
+    iso = date_facts("from 2026-01-01 to 2026-01-02")
+    assert iso == "2026-01-02 is 1 day after 2026-01-01."
+
+
+def test_date_facts_needs_two_dates():
+    from systemone.patterns import date_facts
+
+    assert date_facts("Signed July 22, 2026.") == ""
+    assert date_facts("no dates here") == ""
+    assert date_facts("") == ""
+
+
+def test_date_facts_same_day_and_duplicates():
+    from systemone.patterns import date_facts
+
+    assert date_facts("2026-01-01 then January 1, 2026") == (
+        "January 1, 2026 is the same day as 2026-01-01.")
+    # repeated identical strings count once -> no pairs
+    assert date_facts("2026-01-01 and 2026-01-01") == ""
+
+
+def test_with_date_facts_shapes():
+    from systemone.patterns import with_date_facts
+
+    two = "July 22, 2026 to August 3, 2026"
+    assert with_date_facts("nothing dated") == "nothing dated"
+    assert "date_facts: " in with_date_facts(two)
+    d = with_date_facts({"state": two})
+    assert "date_facts" in d and d["state"] == two
+    lst = with_date_facts([two])
+    assert lst[-1] == {"date_facts": lst[-1]["date_facts"]}
+
+
+def test_shim_date_facts_opt_in(monkeypatch):
+    from systemone.shim import translate_body
+
+    body = {"state": "Signed July 22, 2026, delivered August 3, 2026.",
+            "questions": {"q": {"type": "noul", "instructions": "late?"}}}
+    monkeypatch.delenv("SYSTEMONE_DATE_FACTS", raising=False)
+    state, _ = translate_body(body)
+    assert "date_facts" not in state
+    monkeypatch.setenv("SYSTEMONE_DATE_FACTS", "1")
+    state, _ = translate_body(body)
+    assert "date_facts: August 3, 2026 is 12 days after" in state

@@ -186,9 +186,12 @@ def test_score_confidence_formula():
     split = score_confidence([0.5, 0.5, 0.0, 0.0])
     far = score_confidence([0.5, 0.0, 0.0, 0.5])
     assert 0.0 <= far < split < 1.0  # distance from the mode matters
-    # two levels, k=argmax: 1 - p_far / (n-1)
-    assert score_confidence([0.8, 0.2]) == pytest.approx(0.8)
-    assert score_confidence([0.5, 0.5]) == pytest.approx(0.5)
+    # reference formula (uniform-spread normalization): uniform -> 0,
+    # and two levels give 1 - p_far / 0.5
+    assert score_confidence([0.8, 0.2]) == pytest.approx(0.6)
+    assert score_confidence([0.5, 0.5]) == pytest.approx(0.0)
+    assert score_confidence([1.0]) == pytest.approx(1.0)
+    assert score_confidence([0.0, 0.0, 0.0]) == pytest.approx(0.0)
 
 
 def test_noul_confidence_is_chosen_probability():
