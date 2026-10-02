@@ -50,7 +50,13 @@ def _backend(monkeypatch, payload=None, fail=None):
 
 
 def _answers_payload():
+    # Real SGLang /v1/decisions shapes (sglang main, serving_decisions.py):
+    # score probabilities keyed by level INDEX, yes_no with probabilities
+    # only, plus the response envelope keys.
     return {
+        "object": "decisions",
+        "model": "Qwen/Qwen3.8-27B",
+        "prompt_format_version": 1,
         "answers": {
             "team": {
                 "type": "choice",
@@ -60,17 +66,17 @@ def _answers_payload():
             },
             "impact": {
                 "type": "score",
-                "score": 2.4,
-                "probabilities": {"low": 0.1, "medium": 0.4, "high": 0.5},
+                "score": 1.4,
+                "probabilities": {"0": 0.1, "1": 0.4, "2": 0.5},
                 "label_mass": 0.88,
             },
             "page": {
                 "type": "yes_no",
-                "probability": 0.72,
-                "answer": True,
+                "probabilities": {"yes": 0.72, "no": 0.28},
                 "label_mass": 0.91,
             },
-        }
+        },
+        "usage": {"prompt_tokens": 120, "total_tokens": 120},
     }
 
 
@@ -96,8 +102,7 @@ def test_request_schema_matches_sglang_decisions(monkeypatch):
     assert [o["name"] for o in by_id["team"]["options"]] == [
         "backend", "frontend", "devops"]
     assert by_id["impact"]["type"] == "score"
-    assert [lv["name"] for lv in by_id["impact"]["levels"]] == [
-        "low", "medium", "high"]
+    assert by_id["impact"]["levels"] == ["low", "medium", "high"]
     assert by_id["page"]["type"] == "yes_no"
     assert "question" in by_id["page"]
 
@@ -113,13 +118,18 @@ def test_answer_mapping_and_meta(monkeypatch):
     assert out["team"]["label_mass"] == pytest.approx(0.93)
     assert out["impact"]["type"] == "score"
     assert out["impact"]["level"] == "high"
-    assert out["impact"]["score"] == pytest.approx(2.4)
+    assert out["impact"]["score"] == pytest.approx(1.4)
+    assert out["impact"]["distribution"] == pytest.approx(
+        {"low": 0.1, "medium": 0.4, "high": 0.5})
+    assert out["impact"]["label_mass"] == pytest.approx(0.88)
     assert out["page"]["type"] == "noul"
     assert out["page"]["answer"] is True
     assert out["page"]["probability"] == pytest.approx(0.72)
     meta = out["_meta"]
     assert meta["backend"] == "sglang"
     assert meta["n_questions"] == 3
+    assert meta["prompt_format_version"] == 1
+    assert meta["usage"] == {"prompt_tokens": 120, "total_tokens": 120}
     assert "latency_ms" in meta
 
 
@@ -217,3 +227,67 @@ def test_env_config(monkeypatch):
     assert b.model_name == "Qwen/Qwen3.8-27B"
     b.systemone("s", _questions())
     assert captured["body"]["model"] == "Qwen/Qwen3.8-27B"
+
+
+# -- upstream wire-contract alignment (sglang main, 2026-10-02) ------------
+
+
+def test_blank_state_refused_client_side(monkeypatch):
+    b, captured = _backend(monkeypatch, {"answers": {}})
+    with pytest.raises(SGLangError, match="non-blank"):
+        b.systemone("   ", _questions())
+    assert "url" not in captured  # fail fast, no round-trip
+
+
+def test_blank_question_id_refused_client_side(monkeypatch):
+    b, _ = _backend(monkeypatch, {"answers": {}})
+    with pytest.raises(SGLangError, match="non-blank"):
+        b.systemone("s", [{"name": "  ", "type": "noul",
+                           "statement": "a?"}])
+
+
+def test_option_names_mirror_upstream_rules(monkeypatch):
+    b, captured = _backend(monkeypatch, {"answers": {}})
+    dupes = [{"name": "x", "type": "choice",
+              "options": ["Same", "same "]}]
+    with pytest.raises(SGLangError, match="repeats another"):
+        b.systemone("s", dupes)
+    control = [{"name": "x", "type": "choice",
+                "options": ["ok", "has\nnewline"]}]
+    with pytest.raises(SGLangError, match="line break"):
+        b.systemone("s", control)
+    assert "url" not in captured
+
+
+def test_dict_options_forward_descriptions(monkeypatch):
+    payload = {"answers": {"x": {
+        "type": "choice", "choice": "a",
+        "probabilities": {"a": 0.6, "b": 0.4}, "label_mass": 0.9}}}
+    b, captured = _backend(monkeypatch, payload)
+    out = b.systemone("s", [{"name": "x", "type": "choice", "options": [
+        {"name": "a", "description": "first!"},
+        {"name": "b"},
+    ]}])
+    assert out["x"]["choice"] == "a"
+    assert captured["body"]["questions"][0]["options"] == [
+        {"name": "a", "description": "first!"}, {"name": "b"}]
+
+
+def test_images_dropped_and_reported(monkeypatch):
+    b, captured = _backend(monkeypatch, _answers_payload())
+    out = b.systemone("state", _questions(),
+                      images=["http://img/1.png", "http://img/2.png"])
+    # text-only input on the wire; nothing the server would render as JSON
+    assert captured["body"]["input"] == "state"
+    assert out["_meta"]["media_dropped"] == {"images": 2, "videos": 0}
+
+
+def test_score_missing_index_key_is_loud(monkeypatch):
+    bad = {"answers": {"impact": {
+        "type": "score", "score": 1.0,
+        "probabilities": {"low": 0.5, "high": 0.5},  # name-keyed: not upstream
+        "label_mass": 0.9}}}
+    b, _ = _backend(monkeypatch, bad)
+    with pytest.raises(SGLangError, match="lacks level keys"):
+        b.systemone("s", [{"name": "impact", "type": "score",
+                           "levels": ["low", "high"]}])

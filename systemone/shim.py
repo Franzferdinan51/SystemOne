@@ -1126,12 +1126,15 @@ def translate_answers(answers: Dict[str, Any]) -> Dict[str, Any]:
         if name == "_meta" or not isinstance(ans, dict):
             continue
         atype = ans.get("type")
+        # "x_label_mass" mirrors SGLang's /v1/systemone answers (null:
+        # the local engine has no candidate-scoring signal).
         if atype == "choice":
             out[name] = {
                 "type": "choice",
                 "choice": ans["choice"],
                 "probabilities": ans["probabilities"],
                 "confidence": ans["confidence"],
+                "x_label_mass": ans.get("label_mass"),
             }
         elif atype == "score":
             dist = ans["distribution"]
@@ -1143,6 +1146,7 @@ def translate_answers(answers: Dict[str, Any]) -> Dict[str, Any]:
                 # Clef legend: level -> description (identity when the
                 # engine was not given descriptions).
                 "legend": dict(ans.get("legend") or {lv: lv for lv in dist}),
+                "x_label_mass": ans.get("label_mass"),
             }
         elif atype == "noul":
             out[name] = {
@@ -1153,6 +1157,7 @@ def translate_answers(answers: Dict[str, Any]) -> Dict[str, Any]:
                 "noul": ans["probability"],
                 "answer": ans["answer"],
                 "confidence": ans["confidence"],
+                "x_label_mass": ans.get("label_mass"),
             }
     return out
 
@@ -1164,13 +1169,12 @@ def translate_answers(answers: Dict[str, Any]) -> Dict[str, Any]:
 # tokens. This shim answers the same dialect with the local engine, so any
 # client written against SGLang works unchanged against this box.
 #
-# Version status (verified 2026-09-30): the endpoints are main-branch only,
-# not in any tagged SGLang release (newest PyPI was 0.5.20) — pin a nightly
-# build until a release contains them. Image input is undocumented upstream
-# (input is string | object | array, rendered as compact JSON — the
-# Pokemon demo's "live game state" was structured data, not screenshots),
-# so image parts are noted and skipped here; SGLangBackend marks images=
-# experimental until proven against a live nightly server.
+# Version status (verified 2026-10-02 against sglang main): the endpoints
+# are main-branch only, not in any tagged SGLang release — pin a nightly
+# build until a release contains them. Image input is confirmed
+# unsupported upstream (input is string | object | array, rendered as
+# compact JSON), so image parts are noted and skipped here, and
+# SGLangBackend drops images= (reported in _meta["media_dropped"]).
 
 
 def _option_names(options: Any) -> List[str]:
@@ -1304,9 +1308,15 @@ def translate_decisions_answers(
 ) -> Dict[str, Any]:
     """Engine answers -> SGLang /v1/decisions {"answers": {id: {...}}}.
 
-    The local engine has no label-mass signal (that is an SGLang serving
-    concept), so "label_mass" is null here — the key stays for shape
-    compatibility with SGLang clients.
+    Shapes mirror SGLang's DecisionAnswer exactly (verified against
+    sglang main serving_decisions.py): choice probabilities keyed by
+    option name; score probabilities keyed by level INDEX ("0"-"9")
+    with the index-weighted mean as "score"; yes_no with
+    probabilities {"yes", "no"}. The local engine has no label-mass
+    signal (that is an SGLang serving concept), so "label_mass" is
+    null here — the key stays for shape compatibility with SGLang
+    clients. ("probability"/"answer" ride along on yes_no as local
+    extensions; upstream readers use "probabilities".)
     """
     out: Dict[str, Any] = {}
     for qid in ids:
@@ -1319,7 +1329,7 @@ def translate_decisions_answers(
                 "type": "choice",
                 "choice": ans["choice"],
                 "probabilities": ans["probabilities"],
-                "label_mass": None,
+                "label_mass": ans.get("label_mass"),
             }
         elif atype == "score":
             dist = ans["distribution"]
@@ -1328,15 +1338,21 @@ def translate_decisions_answers(
             out[qid] = {
                 "type": "score",
                 "score": wmean,
-                "probabilities": dist,
-                "label_mass": None,
+                # Index-keyed, like upstream: the client sent the levels
+                # in order and maps positions back to names itself.
+                "probabilities": {
+                    str(i): float(dist[lv]) for i, lv in enumerate(levels)
+                },
+                "label_mass": ans.get("label_mass"),
             }
         elif atype == "noul":
+            p_yes = float(ans["probability"])
             out[qid] = {
                 "type": "yes_no",
+                "probabilities": {"yes": p_yes, "no": 1.0 - p_yes},
                 "probability": ans["probability"],
                 "answer": ans["answer"],
-                "label_mass": None,
+                "label_mass": ans.get("label_mass"),
             }
     return out
 
@@ -1866,6 +1882,10 @@ class ShimHandler(BaseHTTPRequestHandler):
             return 422, {"error": f"unprocessable: {e}"}
         answers = self.server.engine.systemone(state_text, questions)
         return 200, {
+            # "object" mirrors SGLang's DecisionResponse; this box does no
+            # SGLang prompt rendering, so it reports no prompt_format_version
+            # rather than echo a version it does not implement.
+            "object": "decisions",
             "answers": translate_decisions_answers(answers, ids),
             "model": self.server.engine.model_name,
             "usage": {},

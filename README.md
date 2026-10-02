@@ -466,7 +466,7 @@ both directions:
 
 | Clef feature | status here |
 |---|---|
-| top-level `images` / `videos` request fields | accepted, validated, forwarded to engines that take them (`sglang`/`jev` consume images; `jevk5` forwards both to its server); anything dropped is reported in `media` + `warnings`, never silently |
+| top-level `images` / `videos` request fields | accepted, validated, forwarded to engines that take them (`jev` consumes images natively; `jevk5` forwards both to its server; `sglang` drops images — `/v1/decisions` is text-only upstream, verified against sglang main); anything dropped is reported in `media` + `warnings`, never silently |
 | `media_kwargs` | accepted as a validated mapping (reserved for processor-backed engines) |
 | score `legend` (level → description) | returned on every `/v1/systemone` score answer; engines propagate the request's legend, else identity |
 | `noul` = P(true) answer key | returned alongside `probability` (`jevk5_backend` already reads it) |
@@ -567,22 +567,24 @@ so any client written against SGLang works unchanged against this box:
          "question": "Is the agent stuck?"}]}'
 
 Choice is limited to 2–26 options and score to 2–10 levels (422 beyond
-that), mirroring SGLang — past 26 options SGLang switches to two-letter
-labels with order-dependent priors, so we refuse rather than silently
-miscalibrate. At most 64 questions per request. `label_mass` comes back
+that), mirroring SGLang — `/v1/decisions` refuses past 26 (the two-letter
+scheme past 26 exists only on SGLang's `/v1/systemone` route). Score
+probabilities come back keyed by level index (`"0"`–`"9"`), exactly like
+upstream. At most 64 questions per request. `label_mass` comes back
 `null` here; that uncertainty signal only exists on a real SGLang server.
 
 **Use a real SGLang server as the judge.** `SGLangBackend` is a drop-in
 for `SystemOne` with identical question shapes — point it at a served
 model and get bigger judges and prefix-cached sub-100ms loops.
-(Heads-up, verified 2026-09-30: the endpoints are main-branch/nightly
-only, not in any tagged SGLang release — pin a nightly build. And the
-decisions docs describe no image path; `images=` is experimental and
-unverified against the nightly server.):
+(Heads-up, verified 2026-10-02 against sglang main: the endpoints are
+main-branch only, not in any tagged SGLang release — pin a nightly
+build. And `/v1/decisions` is text-only upstream, so `images=` is
+dropped and reported in `_meta["media_dropped"]` — use
+`SYSTEMONE_ENGINE=jev` with a VLM for image decisions.):
 
     from systemone import SGLangBackend
     eng = SGLangBackend()  # SGLANG_BASE_URL, SGLANG_MODEL, SGLANG_TIMEOUT
-    answers = eng.systemone(state, questions, images=[screenshot_data_uri])
+    answers = eng.systemone(state, questions)
     answers["action"]["label_mass"]  # low => the model wanted an OOV answer
 
 Every answer carries `label_mass`; gate on it (fall back to a fuller

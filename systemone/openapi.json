@@ -232,10 +232,8 @@
             },
             "levels": {
              "type": "array",
-             "description": "score: 2-10 items",
-             "items": {
-              "type": "object"
-             }
+             "description": "score: 2-10 bare strings (upstream; {name} mappings also accepted here)",
+             "items": {}
             }
            }
           }

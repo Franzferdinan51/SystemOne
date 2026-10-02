@@ -9,6 +9,8 @@ import sys
 import threading
 import urllib.request
 
+import pytest
+
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
 
 from systemone.shim import (  # noqa: E402
@@ -101,6 +103,32 @@ def test_translate_decisions_answers_shape():
     assert out["action"]["label_mass"] is None
     assert out["stuck"]["type"] == "yes_no"
     assert out["stuck"]["answer"] is True
+    # upstream DecisionAnswer shape: probabilities {"yes", "no"}
+    assert out["stuck"]["probabilities"]["yes"] == pytest.approx(0.8)
+    assert out["stuck"]["probabilities"]["no"] == pytest.approx(0.2)
+
+
+def test_translate_decisions_answers_score_index_keyed():
+    # upstream keys score probabilities by level index ("0"-"9")
+    answers = StubEngine().systemone("", [
+        {"name": "threat", "type": "score",
+         "levels": ["calm", "messy", "chaos"]},
+    ])
+    out = translate_decisions_answers(answers, ["threat"])
+    assert out["threat"]["type"] == "score"
+    assert out["threat"]["probabilities"] == {"0": 1 / 3, "1": 1 / 3,
+                                              "2": 1 / 3}
+    assert out["threat"]["score"] == (
+        0 * 1 / 3 + 1 * 1 / 3 + 2 * 1 / 3)
+    assert out["threat"]["label_mass"] is None
+
+
+def test_translate_decisions_answers_forwards_label_mass():
+    answers = {"q": {"type": "choice", "choice": "a",
+                     "probabilities": {"a": 1.0}, "confidence": 1.0,
+                     "label_mass": 0.97}}
+    out = translate_decisions_answers(answers, ["q"])
+    assert out["q"]["label_mass"] == 0.97
 
 
 def test_decisions_input_parts():
@@ -119,10 +147,17 @@ def test_http_decisions_roundtrip():
     try:
         status, payload = _post(port, "/v1/decisions", _decisions_body())
         assert status == 200
+        assert payload["object"] == "decisions"
         assert set(payload["answers"]) == {"action", "stuck", "threat"}
         assert payload["answers"]["action"]["choice"] == "up"
         assert payload["answers"]["stuck"]["type"] == "yes_no"
+        assert payload["answers"]["stuck"]["probabilities"]["yes"] == (
+            pytest.approx(0.8))
+        assert payload["answers"]["stuck"]["probabilities"]["no"] == (
+            pytest.approx(0.2))
         assert payload["answers"]["threat"]["type"] == "score"
+        assert set(payload["answers"]["threat"]["probabilities"]) == {
+            "0", "1", "2"}
         assert payload["model"] == "stub"
         assert payload["usage"] == {}
         assert "latency_ms" in payload

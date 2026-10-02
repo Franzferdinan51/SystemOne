@@ -133,7 +133,16 @@ def test_translate_answers_choice_shape():
     )
     assert out == {"op": {"type": "choice", "choice": "CLICK",
                           "probabilities": {"CLICK": 0.7, "WAIT": 0.3},
-                          "confidence": 0.7}}
+                          "confidence": 0.7, "x_label_mass": None}}
+
+
+def test_translate_answers_forwards_x_label_mass():
+    out = translate_answers(
+        {"op": {"type": "choice", "choice": "CLICK",
+                "probabilities": {"CLICK": 1.0}, "confidence": 1.0,
+                "label_mass": 0.94}}
+    )
+    assert out["op"]["x_label_mass"] == 0.94
 
 
 class StubEngine:
