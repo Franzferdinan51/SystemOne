@@ -767,8 +767,8 @@ engine — otherwise you're measuring the cache, not the model.
 - **PII scrubbing (opt-in)** — `SYSTEMONE_SCRUB_PII=1` redacts emails,
   phones, SSNs, card numbers, API keys, and IPv4 addresses (typed
   `[REDACTED_*]` tokens) before the state reaches the judge; responses
-  report `{"pii": {"kinds", "count"}}`. High precision, modest recall —
-  a safety net, not DLP.
+  report `{"pii": {"redacted", "kinds", "count"}}`. High precision,
+  modest recall — a safety net, not DLP.
 - **Label-free monitoring** — `systemone.metrics.psi` (Evidently-style
   drift: <0.1 none, >0.2 significant) over confidences or label rates,
   and `estimated_accuracy` (NannyML CBPE: mean max-probability, valid
