@@ -120,6 +120,22 @@ def test_client_decide(monkeypatch):
     assert out["probabilities"]["yes"] == 0.8
 
 
+def test_client_permute(monkeypatch):
+    payload = {"runs": [{"order": ["a", "b"], "choice": "a",
+                         "probabilities": {"a": 0.7, "b": 0.3}}],
+               "argmax_stable": True, "spread": {"a": 0.0, "b": 0.0}}
+    seen = _install_urlopen(
+        monkeypatch, {("POST", "/v1/systemone/permute"): payload})
+    out = SystemOneClient(BASE).permute(
+        "s", {"type": "choice", "criteria": {"a": "A", "b": "B"}},
+        n_perm=4, seed=7)
+    assert out["argmax_stable"] is True
+    method, path, body = seen[0]
+    assert (method, path) == ("POST", "/v1/systemone/permute")
+    assert body["n_perm"] == 4 and body["seed"] == 7
+    assert body["question"]["type"] == "choice"
+
+
 def test_client_status_ok(monkeypatch):
     routes = {
         ("GET", "/healthz"): {"ok": True, "model": "fake-engine"},

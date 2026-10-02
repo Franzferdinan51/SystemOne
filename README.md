@@ -29,7 +29,7 @@ point). See [The agent loop](#the-agent-loop-see--decide--act).
 ### October 2026
 
 - **SGLang baked in as a first-class engine** — the shim serves
-  `SYSTEMONE_ENGINE=auto|local|sglang|jevk5|onnx|jev` (probing only
+  `SYSTEMONE_ENGINE=auto|local|sglang|jevk5|onnx|jev|kev` (probing only
   explicitly configured servers, always fail-open), the base install is
   slim (numpy-only; torch/GLiClass moved to `pip install
   'systemone[local]'`), and `HybridBackend` escalates low-confidence
@@ -309,7 +309,7 @@ the probe.
   endpoint. Serves the exact request/response dialect Ryan's `jev-ultrafast`
   and `mobile-jev` agents already speak (TypeSafe `questions` dict with
   `criteria` + `instructions`, rich dict `state`) from any of seven engines
-  (`SYSTEMONE_ENGINE=auto|local|sglang|jevk5|onnx|jev`) — no API key, no
+  (`SYSTEMONE_ENGINE=auto|local|sglang|jevk5|onnx|jev|kev`) — no API key, no
   cloud, no per-call cost. Run `python -m systemone.shim [--port 8765]`,
   then point the agent's `post_json` URL at
   `http://127.0.0.1:8765/v1/systemone`. The only change on their side is
@@ -543,7 +543,7 @@ shape instead of hand-rolling loop, gating, memory, and stall logic.
 SystemOne speaks both sides of SGLang's decision API, and SGLang is now a
 baked-in engine choice — not a sidecar integration.
 
-**Pick the judge: `SYSTEMONE_ENGINE=auto|local|sglang|jevk5|onnx|jev`.**
+**Pick the judge: `SYSTEMONE_ENGINE=auto|local|sglang|jevk5|onnx|jev|kev`.**
 The shim (`python3 -m systemone.shim`, `systemone serve`) serves whichever
 engine you select (`--engine` flag overrides the env var):
 
