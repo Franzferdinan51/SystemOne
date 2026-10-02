@@ -25,6 +25,21 @@ early-stop, and System 1 → System 2 escalation below 0.70 confidence
 (the [JEV-27B-VL](https://huggingface.co/autotrust/JEV-27B-VL) operating
 point). See [The agent loop](#the-agent-loop-see--decide--act).
 
+## The decision surface
+
+SystemOne is a decision layer. Cost/quality routing is one facet of
+`route`, which is one facet of deciding. Every entry point below returns
+calibrated probabilities with honest uncertainty — decide first, then act:
+
+| Endpoint | Decides |
+|---|---|
+| `POST /v1/systemone/route` | effort tier + turn budget + ranked models/tools for a task |
+| `POST /v1/systemone/rank-plans` | which candidate plan to execute |
+| `POST /v1/systemone/decide` | one typed question (`choice` / `noul` / `score`) |
+| `POST /v1/systemone/permute` | whether a choice survives option reordering (verify before acting) |
+| `POST /v1/systemone/batch` | up to 32 typed questions in one call |
+| `POST /v1/decide` | one JEV-wire-format decision (System 1 text+images, System 2 chat) |
+
 ## What's new
 
 ### October 2026
