@@ -396,11 +396,14 @@ All under `systemone/examples/`:
 
 `systemone jevbench --items public.jsonl --out preds.jsonl` scores a
 [JevBench](https://github.com/fstandhartinger/jevbench)-format split with
-any engine (`--engine auto|local|sglang|jevk5|onnx|jev`, default auto): accuracy overall
+any engine (`--engine auto|local|sglang|jevk5|onnx|jev|kev`, default auto): accuracy overall
 and per family, mean latency, and per-item native probability distributions
-(Brier/ECE eligible — never verbalized). Items with a
+(Brier/ECE eligible — never verbalized). `--remote BASE_URL` scores any
+`/v1/systemone` HTTP endpoint instead (this shim, `kev.serve`, SGLang),
+with `--concurrency N`, kev-style retries (408/429/5xx), fast-fail client
+errors, and per-item 422 tolerance. Items with a
 `provenance.exclude_reason` are skipped, and one bad item never kills a run.
-See `systemone/jevbench.py` (`score_item` / `run_file`); registering upstream
+See `systemone/jevbench.py` (`score_item` / `run_file` / `run_remote`); registering upstream
 would vendor that mapping into `jevbench/adapters/`.
 
 ## Beyond GLiClass: the backend lineup

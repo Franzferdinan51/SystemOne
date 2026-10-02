@@ -37,8 +37,12 @@ from systemone.calibration import (
 from systemone.metrics import (
     aurc,
     brier_score,
+    coverage_at_error,
+    evaluate_threshold,
     format_table,
     nll_score,
+    risk_coverage_curve,
+    select_threshold,
     selective_accuracy,
     summarize,
     top_label_ece,
@@ -307,11 +311,52 @@ def test_summarize_and_format_table():
     assert s["name"] == "demo" and s["n"] == 4.0
     assert s["accuracy"] == pytest.approx(1.0)
     assert s["ece_15"] == pytest.approx(0.15, abs=0.01)
-    for k in ("brier", "nll", "aurc", "sel_acc@50", "sel_acc@80", "sel_acc@100"):
+    for k in ("brier", "nll", "aurc", "sel_acc@50", "sel_acc@80", "sel_acc@100",
+              "cov@5%", "cov@1%"):
         assert k in s and np.isfinite(s[k])
     table = format_table([s, summarize(y, P, name="demo2")])
     assert "ece15" in table and "demo" in table and "demo2" in table
     assert format_table([]) == "(no rows)"
+
+
+def test_coverage_at_error():
+    # confidences sorted: 0.9 ok, 0.8 ok, 0.7 ok, 0.6 wrong
+    y = [0, 0, 1, 1]
+    P = [[0.9, 0.1], [0.8, 0.2], [0.3, 0.7], [0.6, 0.4]]
+    assert coverage_at_error(y, P, 0.0) == pytest.approx(0.75)
+    assert coverage_at_error(y, P, 0.25) == pytest.approx(1.0)
+    # confidently wrong first: zero coverage at a zero budget
+    bad = [[0.99, 0.01], [0.99, 0.01], [0.99, 0.01], [0.99, 0.01]]
+    assert coverage_at_error([1, 1, 1, 1], bad, 0.0) == pytest.approx(0.0)
+    with pytest.raises(ValueError):
+        coverage_at_error(y, P, 1.5)
+
+
+def test_risk_coverage_curve_groups_ties():
+    y = [0, 0, 1]
+    P = [[0.8, 0.2], [0.8, 0.2], [0.1, 0.9]]
+    curve = risk_coverage_curve(y, P)
+    # the two 0.8 rows move as one group: two points, not three
+    assert [c["accepted"] for c in curve] == [1, 3]
+    assert curve[0] == {"threshold": pytest.approx(0.9), "accepted": 1,
+                        "errors": 0, "coverage": pytest.approx(1 / 3),
+                        "risk": pytest.approx(0.0)}
+    assert curve[-1]["coverage"] == pytest.approx(1.0)
+
+
+def test_select_and_evaluate_threshold():
+    y = [0, 0, 1, 1]
+    P = [[0.9, 0.1], [0.8, 0.2], [0.3, 0.7], [0.6, 0.4]]
+    assert select_threshold(y, P, 0.0) == pytest.approx(0.7)
+    ev = evaluate_threshold(y, P, 0.7)
+    assert ev["accepted"] == 3.0 and ev["errors"] == 0.0
+    assert ev["coverage"] == pytest.approx(0.75)
+    assert ev["risk"] == pytest.approx(0.0)
+    abstain = evaluate_threshold(y, P, None)
+    assert abstain["accepted"] == 0.0 and abstain["risk"] is None
+    assert select_threshold(y, P, 0.0, min_accepted=99) is None
+    with pytest.raises(ValueError):
+        evaluate_threshold(y, P, 2.0)
 
 
 # -- scoring.temperature_for --------------------------------------------------
