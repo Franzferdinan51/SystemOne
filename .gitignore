@@ -7,3 +7,5 @@ venv/
 *.log
 *_route_cache.json
 .DS_Store
+dist/
+build/
