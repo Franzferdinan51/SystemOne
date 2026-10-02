@@ -44,6 +44,16 @@ calibrated probabilities with honest uncertainty — decide first, then act:
 
 ### October 2026
 
+- **Model preference override** — `SYSTEMONE_PREFER_MODELS=id1,id2`
+  sorts the listed models first in `ranked_models` on every sort
+  (explicit user override; unknown ids ignored). The bundled registry
+  now includes `cloudflare_clef-flash` (balanced tier, 9B-class
+  estimates marked `_estimated`, availability flipped live from LM
+  Studio inventory). To add your own models: append a `models[]`
+  entry with `model_id`, `cost`, and per-tier `quality` (copy the
+  nearest size class, mark `_estimated`, measure later via the
+  calibration battery); the shim's inventory refresher handles
+  `available` from LM Studio automatically.
 - **SGLang baked in as a first-class engine** — the shim serves
   `SYSTEMONE_ENGINE=auto|local|sglang|jevk5|onnx|jev|kev|clef` (probing only
   explicitly configured servers, always fail-open), the base install is
