@@ -3,9 +3,10 @@
 A Jev-style typed-decision layer: `choice` / `score` / `noul` answers with
 calibrated probabilities, one batched call, honest uncertainty. TypeSafe's
 Jev is a closed API; this package rebuilds that shape on hardware you
-control — a slim numpy-only base with seven swappable engines: local
+control — a slim numpy-only base with eight swappable engines: local
 GLiClass (Apache-2.0, 32M–439M params), SGLang, JEV decision models,
-JevK5, Kev (0.8B–27B), a CPU-only ONNX judge, and the decider-4b sidecar.
+JevK5, Kev (0.8B–27B), Cloudflare Clef (9B/27B, multimodal), a CPU-only
+ONNX judge, and the decider-4b sidecar.
 
 ## Philosophy: See > Decide > Act
 
@@ -29,7 +30,7 @@ point). See [The agent loop](#the-agent-loop-see--decide--act).
 ### October 2026
 
 - **SGLang baked in as a first-class engine** — the shim serves
-  `SYSTEMONE_ENGINE=auto|local|sglang|jevk5|onnx|jev|kev` (probing only
+  `SYSTEMONE_ENGINE=auto|local|sglang|jevk5|onnx|jev|kev|clef` (probing only
   explicitly configured servers, always fail-open), the base install is
   slim (numpy-only; torch/GLiClass moved to `pip install
   'systemone[local]'`), and `HybridBackend` escalates low-confidence
@@ -308,8 +309,8 @@ the probe.
 - **`shim.py`** — local drop-in for TypeSafe's hosted `/v1/systemone`
   endpoint. Serves the exact request/response dialect Ryan's `jev-ultrafast`
   and `mobile-jev` agents already speak (TypeSafe `questions` dict with
-  `criteria` + `instructions`, rich dict `state`) from any of seven engines
-  (`SYSTEMONE_ENGINE=auto|local|sglang|jevk5|onnx|jev|kev`) — no API key, no
+  `criteria` + `instructions`, rich dict `state`) from any of eight engines
+  (`SYSTEMONE_ENGINE=auto|local|sglang|jevk5|onnx|jev|kev|clef`) — no API key, no
   cloud, no per-call cost. Run `python -m systemone.shim [--port 8765]`,
   then point the agent's `post_json` URL at
   `http://127.0.0.1:8765/v1/systemone`. The only change on their side is
@@ -325,6 +326,9 @@ the probe.
   server's `/v1/systemone` (forwards Clef media).
 - **`kev_backend.py`** — `KevBackend`: judge via a `kev.serve`
   server's `/v1/systemone` (Kev-0.8B/4B/9B/27B, long-doc specialist).
+- **`clef_backend.py`** — `ClefBackend`: judge locally with Cloudflare
+  `clef` / `clef-flash` weights (multimodal joint schema head, images +
+  video + long state, `pip install 'systemone[clef]'`).
 - **`rerank_backend.py`** — `RerankBackend`: cross-encoder judge over any
   score function; `OnnxCrossEncoder`: CPU-only ONNX cross-encoder.
 - **`loop.py`** — `DecisionLoop`: the one See > Decide > Act agent loop.
@@ -398,7 +402,7 @@ All under `systemone/examples/`:
 
 `systemone jevbench --items public.jsonl --out preds.jsonl` scores a
 [JevBench](https://github.com/fstandhartinger/jevbench)-format split with
-any engine (`--engine auto|local|sglang|jevk5|onnx|jev|kev`, default auto): accuracy overall
+any engine (`--engine auto|local|sglang|jevk5|onnx|jev|kev|clef`, default auto): accuracy overall
 and per family, mean latency, and per-item native probability distributions
 (Brier/ECE eligible — never verbalized). `--remote BASE_URL` scores any
 `/v1/systemone` HTTP endpoint instead (this shim, `kev.serve`, SGLang),
@@ -423,6 +427,7 @@ JevBench board:
 | `onnx` | ONNX cross-encoder rerank judge, CPU-only, no torch | easy 81.2% @ ~22 ms, hard 35.1%, original 36.1% (BGE-base int8, Apple Silicon CPU) |
 | `jev` | JEV decision model (System 1 + System 2, multimodal) via `/v1/decide` | JEV-27B-VL: Plan-RewardBench 73.2 (top), VL-RewardBench 78.3, ECE 0.0009 (model card) |
 | `kev` | Kev family (0.8B laptop → 27B datacentre) via `kev.serve` | Kev-27B within 1pt of Jev on new sources; 65k-token docs; shipped T per checkpoint |
+| `clef` | Cloudflare clef (27B) / clef-flash (9B), local joint-schema judge | Beats Jev on BFCL, BANKING77, ToolRet, CRUXEval (their Decision Index 0.2.1 run); flash 39 ms median |
 
 The ONNX judge is the honest CPU fallback: strong on easy-tier routing-style
 items, weak on hard items next to 4B+ purpose-built judges — pick the
@@ -485,18 +490,43 @@ per-request `registry` to `POST /v1/systemone/route`. Kev also
 contributed the shared reference `score_confidence` formula and the
 opt-in `SYSTEMONE_DATE_FACTS=1` date preprocessing.
 
-## Clef compatibility (`Cloudflare/clef`)
+## Clef judges (`SYSTEMONE_ENGINE=clef`)
 
 [Clef](https://huggingface.co/Cloudflare/clef) (Apache-2.0) is a 27B
-multimodal decision model whose API is, in its own words, "fully
-compatible with Jev and SystemOne" — it consumes and produces our
-`POST /v1/systemone` shape. We pulled its schema extensions back into
-this box, so Clef clients and Clef servers interoperate with the shim in
-both directions:
+multimodal decision model, with
+[Clef-flash](https://huggingface.co/Cloudflare/clef-flash) (9B) as the
+smaller, faster variant — both post-trained from Qwen3.5/3.8 with a
+joint schema head that scores every option of every question in one
+forward pass. On their Decision Index 0.2.1 run Clef beats Jev on most
+agent/tool benchmarks (BFCL 98.5 vs 95.8, BANKING77 94.2 vs 79.7 F1,
+ToolRet, CRUXEval) at 209 ms median latency; Clef-flash wins several of
+the same at 39 ms. `ClefBackend` runs either release locally through
+its own `joint_schema_model.systemone()`:
+
+    pip install 'systemone[clef]'
+    SYSTEMONE_ENGINE=clef systemone serve  # serves clef-flash by default
+
+`CLEF_MODEL_ID` (default `Cloudflare/clef-flash` — the runnable one;
+`Cloudflare/clef` wants datacentre VRAM), `CLEF_REVISION`,
+`CLEF_DEVICE` (auto: cuda > mps > cpu), `CLEF_DTYPE` (default
+bfloat16), and `CLEF_MAX_LENGTH` (default 16384) configure the load.
+Text, JSON, image (URL / data URL / path / PIL), and video-frame states
+judge jointly; undecodable media drops fail-open with reasons in
+`_meta["media_dropped"]`. `clef` is never auto-selected (it downloads
+9–27B weights) and fails open to `local` when the weights are
+unreachable.
+
+## Clef compatibility (`Cloudflare/clef`)
+
+Clef's API is, in its own words, "fully compatible with Jev and
+SystemOne" — it consumes and produces our `POST /v1/systemone` shape.
+Beyond running the weights (`SYSTEMONE_ENGINE=clef` above), we pulled
+its schema extensions back into this box, so Clef clients and Clef
+servers interoperate with the shim in both directions:
 
 | Clef feature | status here |
 |---|---|
-| top-level `images` / `videos` request fields | accepted, validated, forwarded to engines that take them (`jev` consumes images natively; `jevk5` forwards both to its server; `sglang` drops images — `/v1/decisions` is text-only upstream, verified against sglang main); anything dropped is reported in `media` + `warnings`, never silently |
+| top-level `images` / `videos` request fields | accepted, validated, forwarded to engines that take them (`clef` consumes both natively; `jev` consumes images natively; `jevk5` forwards both to its server; `sglang` drops images — `/v1/decisions` is text-only upstream, verified against sglang main); anything dropped is reported in `media` + `warnings`, never silently |
 | `media_kwargs` | accepted as a validated mapping (reserved for processor-backed engines) |
 | score `legend` (level → description) | returned on every `/v1/systemone` score answer; engines propagate the request's legend, else identity |
 | `noul` = P(true) answer key | returned alongside `probability` (`jevk5_backend` already reads it) |
@@ -543,7 +573,7 @@ shape instead of hand-rolling loop, gating, memory, and stall logic.
 SystemOne speaks both sides of SGLang's decision API, and SGLang is now a
 baked-in engine choice — not a sidecar integration.
 
-**Pick the judge: `SYSTEMONE_ENGINE=auto|local|sglang|jevk5|onnx|jev|kev`.**
+**Pick the judge: `SYSTEMONE_ENGINE=auto|local|sglang|jevk5|onnx|jev|kev|clef`.**
 The shim (`python3 -m systemone.shim`, `systemone serve`) serves whichever
 engine you select (`--engine` flag overrides the env var):
 
@@ -555,7 +585,8 @@ engine you select (`--engine` flag overrides the env var):
 | `jevk5` | Always a JevK5 server (`jevk5-serve`'s `/v1/systemone`). Same fail-open behavior as `sglang`. |
 | `kev` | Always a Kev server (`kev.serve`'s `/v1/systemone`). Same fail-open behavior as `sglang`. Text-only; the long-doc specialist. |
 | `onnx` | Always the local ONNX cross-encoder judge (default Xenova/bge-reranker-base int8; `RERANK_MODEL_ID` / `RERANK_ONNX_FILE` / `RERANK_REVISION` override). Needs `onnxruntime` + `tokenizers` + `huggingface_hub`. Never auto-selected (it downloads weights). |
-| `jev` | Always a JEV decision model (`/v1/decide`). Same fail-open behavior as `sglang`. Only this engine serves images natively. |
+| `jev` | Always a JEV decision model (`/v1/decide`). Same fail-open behavior as `sglang`. Serves images natively (like `clef`). |
+| `clef` | Always the local Clef weights (`Cloudflare/clef-flash` by default; `CLEF_MODEL_ID` / `CLEF_REVISION` / `CLEF_DEVICE` / `CLEF_DTYPE` / `CLEF_MAX_LENGTH` override). Needs `pip install 'systemone[clef]'`. Never auto-selected (it downloads weights). Serves images and video natively. |
 
 `GET /healthz` reports the live choice (`{"ok": true, "model": ...,
 "backend": "local"|"sglang"|"hybrid"|"jev"|"jevk5"|"rerank"|"custom"}`), and

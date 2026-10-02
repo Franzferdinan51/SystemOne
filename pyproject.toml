@@ -34,6 +34,16 @@ local = [
     # its default branch. Pin a commit in deploys that need it.
     "gliclass @ git+https://github.com/Franzferdinan51/GLiClass",
 ]
+clef = [
+    # Local Cloudflare clef / clef-flash engine (SYSTEMONE_ENGINE=clef).
+    # Card-tested on torch 2.11 + transformers 5.10.2; transformers>=5
+    # for the Qwen3.5 conditional-generation arch the releases load.
+    "torch>=2.0",
+    "transformers>=5.0",
+    "huggingface_hub>=0.20",
+    "safetensors>=0.4",
+    "pillow>=9",
+]
 mcp = [
     "mcp<2",
     # CVE floor: pyjwt <2.15 has known auth-bypass advisories and rides in
