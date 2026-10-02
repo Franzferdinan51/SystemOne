@@ -388,7 +388,7 @@ _DECIDE_USAGE = (
     "```\n"
     "criteria: choice -> {label: description}; "
     "score -> ordered [level descriptions]; "
-    'noul -> {"true": "...", "false": "..."} (optional).'
+    'noul -> {"yes": "...", "no": "..."} or {"true": "...", "false": "..."} (optional).'
 )
 
 

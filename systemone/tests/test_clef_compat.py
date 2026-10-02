@@ -100,6 +100,15 @@ def test_missing_instructions_falls_back_to_id():
     assert q["statement"] == "x"
 
 
+def test_unknown_qtype_and_empty_options_rejected():
+    with pytest.raises(ValueError, match="unknown type"):
+        translate_question("x", {"type": "bogus", "criteria": {"a": "A"}})
+    with pytest.raises(ValueError, match=">= 2 options"):
+        translate_question("x", {"type": "choice", "criteria": {}})
+    with pytest.raises(ValueError, match=">= 2 options"):
+        translate_question("x", {"type": "score", "criteria": []})
+
+
 def test_noul_criteria_descriptions_reach_statement():
     q = translate_question("outage", {"type": "noul",
                                       "criteria": {"true": "Down.",

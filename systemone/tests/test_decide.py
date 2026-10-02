@@ -6,7 +6,7 @@ either monkeypatched or served by a fake loopback sidecar. Covers:
 - request validation -> 400 (bad type, missing state/instructions,
   malformed criteria), mirroring the sidecar's decide schema
 - primary path: proxy to the Jeff-1 sidecar; the reply comes back with
-  backend "jeff1" and the forwarded request is the decide schema
+  backend "decider" and the forwarded request is the decide schema
 - fail-open fallback: sidecar down / 404 / malformed -> the local
   GLiClass machinery answers with backend "fallback", sidecar-shaped
   response, TypeSafe confidence wiring
@@ -144,6 +144,8 @@ def _fallback(monkeypatch, engine, reply=None):
      "criteria": ["a", "b", "c"]},                             # bad noul shape
     {"state": "x", "instructions": "i", "type": "noul",
      "criteria": {"yes": 1, "no": "n"}},                       # bad yes desc
+    {"state": "x", "instructions": "i", "type": "noul",
+     "criteria": {"maybe": "m"}},                             # unknown keys
 ])
 def test_decide_rejects_bad_requests(server, monkeypatch, payload):
     _, port, engine = server
@@ -152,6 +154,19 @@ def test_decide_rejects_bad_requests(server, monkeypatch, payload):
     assert code == 400
     assert "error" in body
     assert seen == []  # validation fails before any Jeff-1 attempt
+
+
+def test_decide_accepts_true_false_noul_criteria(server, monkeypatch):
+    _, port, engine = server
+    _fallback(monkeypatch, engine)
+    code, body = _post_decide(port, {
+        "state": "x", "instructions": "Is it up?", "type": "noul",
+        "criteria": {"true": "Service is up.", "false": "Service is down."},
+    })
+    assert code == 200
+    assert body["probabilities"] == {"yes": 0.75, "no": 0.25}
+    statement = engine.systemone_calls[0][1][0]["statement"]
+    assert "Service is up." in statement and "Service is down." in statement
 
 
 def test_decide_rejects_non_object_body(server, monkeypatch):
@@ -165,7 +180,7 @@ def test_decide_rejects_non_object_body(server, monkeypatch):
 # -- primary path: proxy to Jeff-1 -------------------------------------------
 
 
-def test_proxy_path_backend_jeff1(server, monkeypatch):
+def test_proxy_path_backend_decider(server, monkeypatch):
     _, port, engine = server
     forwarded = []
 
@@ -183,7 +198,7 @@ def test_proxy_path_backend_jeff1(server, monkeypatch):
         "type": "choice",
     })
     assert code == 200
-    assert body["backend"] == "jeff1"
+    assert body["backend"] == "decider"
     assert body["type"] == "choice"
     assert body["label"] == "b"
     assert body["probabilities"] == {"a": 0.2, "b": 0.8}
@@ -213,7 +228,7 @@ def test_proxy_path_noul_passthrough(server, monkeypatch):
         "criteria": {"yes": "holds", "no": "fails"},
     })
     assert code == 200
-    assert body["backend"] == "jeff1"
+    assert body["backend"] == "decider"
     assert body["label"] == "no"
     assert body["probabilities"] == {"yes": 0.3, "no": 0.7}
 
@@ -439,7 +454,7 @@ def test_decide_via_jeff1_disabled_is_fail_open(monkeypatch, fake_sidecar):
 
 def test_proxy_path_preserves_sidecar_backend(server, monkeypatch):
     """The shim passes through the backend the sidecar reported (decider),
-    instead of stamping every proxied answer "jeff1"."""
+    instead of stamping every proxied answer with a fixed label."""
     _, port, engine = server
     monkeypatch.setattr(
         shim, "decide_via_jeff1",

@@ -215,8 +215,11 @@ def blend_rankings(
             steps = int(g.get("est_steps", 1))
         except (TypeError, ValueError):
             steps = 1
-        penalty = (round(steps * float(tier_cost) / 100.0, 4)
-                   if tier_cost is not None else 0.0)
+        try:
+            penalty = (round(steps * float(tier_cost) / 100.0, 4)
+                       if tier_cost is not None else 0.0)
+        except (TypeError, ValueError, ArithmeticError):
+            penalty = 0.0
         blended.append({
             "id": pid,
             "score": round(p - penalty, 4),

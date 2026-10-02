@@ -136,17 +136,14 @@ def make_judge(engine_name, env):
         return lambda state_text, questions, images, videos: stub_judge(
             state_text, questions, images, videos, env=env)
     if engine_name == "local":
-        from systemone import SystemOne
-        eng = SystemOne()
-        return lambda state_text, questions, images, videos: eng.systemone(
-            state_text, questions, images=images or None, videos=videos or None)
+        from systemone import SystemOne, decide_fn_for
+        return decide_fn_for(SystemOne())
     if engine_name == "sglang":
-        from systemone import SGLangBackend
+        from systemone import SGLangBackend, decide_fn_for
         eng = SGLangBackend()
         if not eng.health():
             raise SystemExit(f"SGLang not reachable at {eng.base_url}")
-        return lambda state_text, questions, images, videos: eng.systemone(
-            state_text, questions, images=images or None, videos=videos or None)
+        return decide_fn_for(eng)
     raise SystemExit(f"unknown engine: {engine_name}")
 
 

@@ -103,10 +103,13 @@ def test_request_schema_matches_sglang_decisions(monkeypatch):
 
 
 def test_answer_mapping_and_meta(monkeypatch):
+    from systemone.patterns import choice_confidence
+
     b, captured = _backend(monkeypatch, _answers_payload())
     out = b.systemone("state", _questions())
     assert out["team"]["choice"] == "backend"
-    assert out["team"]["confidence"] == pytest.approx(0.7)
+    assert out["team"]["confidence"] == pytest.approx(
+        choice_confidence([0.7, 0.2, 0.1]))
     assert out["team"]["label_mass"] == pytest.approx(0.93)
     assert out["impact"]["type"] == "score"
     assert out["impact"]["level"] == "high"
@@ -171,6 +174,8 @@ def test_check_distribution_contract():
 
 
 def test_speculative_decide_uses_only_chosen_head(monkeypatch):
+    from systemone.patterns import choice_confidence
+
     payload = {"answers": {
         "op": {"type": "choice", "choice": "click",
                "probabilities": {"click": 0.8, "wait": 0.2}, "label_mass": 0.9},
@@ -192,7 +197,8 @@ def test_speculative_decide_uses_only_chosen_head(monkeypatch):
     )
     assert out["operation"] == "click"
     assert out["target"] == "btn-2"  # "y" would mean the wrong head was used
-    assert out["target_confidence"] == pytest.approx(0.7)
+    assert out["target_confidence"] == pytest.approx(
+        choice_confidence([0.3, 0.7]))
 
 
 def test_env_config(monkeypatch):

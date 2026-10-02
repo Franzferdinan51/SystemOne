@@ -30,7 +30,7 @@ once — lazily, on the first POST — then serves:
         -> {"type": "choice", "label": "...", "probabilities": {...},
             "confidence": 0.72, "latency_ms": 12.3}
         Generic typed decision over the backend's readout heads. "noul"
-        answers yes/no (criteria optional: {"yes","no"} or [yes, no]);
+        answers yes/no (criteria optional: {"yes","no"} or {"true","false"} or [yes, no]);
         "score" rates ordered levels — criteria is either a list of
         level descriptions or a dict keyed "0".."n-1".
         Confidence always uses the TypeSafe-compatible helpers from
@@ -86,7 +86,15 @@ from typing import Any, Dict, List, Optional, Tuple
 # noul_confidence, score_confidence) — confidence semantics adapted from
 # Mapika/decider (Apache-2.0) via this repo's patterns.py; imported, never
 # reimplemented or hard-coded.
-from .patterns import choice_confidence, noul_confidence, score_confidence
+from .patterns import (
+    MAX_PLANS_PER_REQUEST,
+    BodyTooLarge,
+    api_token_ok,
+    check_body_length,
+    choice_confidence,
+    noul_confidence,
+    score_confidence,
+)
 
 # Decider backend pin: Mapika/decider-4b v2.1 (Apache-2.0), merged bf16
 # weights. The revision is resolved to a local HF snapshot dir before
@@ -287,6 +295,9 @@ def _handle_rank_plans(engine: DeciderEngine,
     plans = body.get("plans")
     if not isinstance(plans, list) or not plans:
         raise ValueError("'plans' must be a non-empty list")
+    if len(plans) > MAX_PLANS_PER_REQUEST:
+        raise ValueError(
+            f"'plans' exceeds the {MAX_PLANS_PER_REQUEST}-plan cap")
     for p in plans:
         if not isinstance(p, dict) or not isinstance(p.get("text"), str):
             raise ValueError("each plan must be a mapping with a 'text' string")
@@ -414,13 +425,21 @@ def _decide_noul_descriptions(raw: Any) -> Tuple[Optional[str], Optional[str]]:
     if raw is None:
         return None, None
     if isinstance(raw, dict):
-        yes_desc, no_desc = raw.get("yes"), raw.get("no")
+        unknown = set(raw) - {"yes", "no", "true", "false"}
+        if unknown:
+            raise ValueError(
+                f"unknown noul criteria keys: {sorted(unknown)}; use "
+                "{yes, no} or {true, false}")
+        if "yes" in raw or "no" in raw:
+            yes_desc, no_desc = raw.get("yes"), raw.get("no")
+        else:
+            yes_desc, no_desc = raw.get("true"), raw.get("false")
     elif isinstance(raw, (list, tuple)) and len(raw) == 2:
         yes_desc, no_desc = raw[0], raw[1]
     else:
         raise ValueError(
-            "'criteria' for noul must be null, a {yes, no} mapping, "
-            "or a 2-item [yes, no] list")
+            "'criteria' for noul must be null, a {yes, no} or {true, false} "
+            "mapping, or a 2-item [yes, no] list")
     for name, desc in (("yes", yes_desc), ("no", no_desc)):
         if desc is not None and not isinstance(desc, str):
             raise ValueError(f"'criteria.{name}' must be a string or null")
@@ -510,7 +529,7 @@ class Jeff1Handler(BaseHTTPRequestHandler):
         self.wfile.write(data)
 
     def _read_body(self) -> Dict[str, Any]:
-        length = int(self.headers.get("Content-Length", 0))
+        length = check_body_length(self.headers)
         return json.loads(self.rfile.read(length) or b"{}")
 
     def _ensure_engine(self) -> DeciderEngine:
@@ -540,6 +559,10 @@ class Jeff1Handler(BaseHTTPRequestHandler):
     def do_POST(self) -> None:  # noqa: N802
         t0 = time.perf_counter()
         try:
+            if not api_token_ok(self.headers.get("Authorization")):
+                self._send_json(401, {
+                    "error": "unauthorized: missing or wrong bearer token"})
+                return
             engine = self._ensure_engine()
             body = self._read_body()
             if self.path == "/v1/jeff1/rank-plans":
@@ -556,6 +579,8 @@ class Jeff1Handler(BaseHTTPRequestHandler):
             payload["latency_ms"] = round(
                 (time.perf_counter() - t0) * 1000.0, 1)
             self._send_json(200, payload)
+        except BodyTooLarge as e:
+            self._send_json(413, {"error": f"request too large: {e}"})
         except ValueError as e:
             self._send_json(400, {"error": f"bad request: {e}"})
         except RuntimeError as e:

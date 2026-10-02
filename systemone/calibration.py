@@ -495,14 +495,12 @@ def load_calibrator_file(path: str) -> Any:
 
     Per-type maps (dicts carrying "temperature_by_type") load as
     PerTypeTemperatureCalibrator; anything else dict-shaped loads as
-    TemperatureCalibrator (fail-open to T=1 on insane values). Legacy
-    pickled calibrators still load, with a DeprecationWarning pointing at
-    JSON — pickle executes code at load time, so JSON files (data-only)
-    are the safe format going forward.
+    TemperatureCalibrator (fail-open to T=1 on insane values). JSON-only:
+    anything else raises instead of unpickling — pickle executes code at
+    load time, and the calibrator path is reachable from an env var, so a
+    fail-closed error beats a code-execution fallback. Re-save legacy
+    pickles with calibrator.save(path).
     """
-    import pickle
-    import warnings
-
     with open(path, "rb") as f:
         raw = f.read()
     try:
@@ -513,14 +511,10 @@ def load_calibrator_file(path: str) -> Any:
         if "temperature_by_type" in d:
             return PerTypeTemperatureCalibrator.from_dict(d)
         return TemperatureCalibrator.from_dict(d)
-    warnings.warn(
-        f"pickled calibrator at {path}: pickle executes code at load time; "
-        "re-save as JSON (calibrator.save(path))",
-        DeprecationWarning,
-        stacklevel=2,
+    raise ValueError(
+        f"calibrator at {path} is not JSON; re-save as JSON "
+        "(calibrator.save(path)) — pickle files are refused"
     )
-    with open(path, "rb") as f:
-        return pickle.load(f)  # nosec B301 -- legacy operator-owned files only; JSON is the documented format # nosemgrep: python.lang.security.deserialization.pickle.avoid-pickle
 
 
 def load_type_calibration(path: str) -> PerTypeTemperatureCalibrator | None:

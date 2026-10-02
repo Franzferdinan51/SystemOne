@@ -77,6 +77,8 @@ import urllib.error
 import urllib.request
 from typing import Any, Dict, List, Sequence
 
+from .patterns import choice_confidence, noul_confidence, score_confidence
+
 # SGLang's documented limits for /v1/decisions. We enforce them client-side
 # so a mis-shaped call fails fast and loudly instead of returning quietly
 # miscalibrated answers (see module docstring on >26 options).
@@ -385,7 +387,7 @@ class SGLangBackend:
                     "type": "choice",
                     "choice": best,
                     "probabilities": probs,
-                    "confidence": float(max(probs.values())),
+                    "confidence": choice_confidence(list(probs.values())),
                     "label_mass": label_mass,
                 }
             elif qtype == "score":
@@ -401,7 +403,8 @@ class SGLangBackend:
                     "level": best,
                     "distribution": probs,
                     "score": float(wmean),
-                    "confidence": float(max(probs.values())),
+                    "confidence": score_confidence(
+                        [probs[lv] for lv in labs]),
                     "label_mass": label_mass,
                     "legend": dict(q.get("legend") or {}),
                 }
@@ -416,7 +419,7 @@ class SGLangBackend:
                     "type": "noul",
                     "probability": p_yes,
                     "answer": bool(p_yes >= 0.5),
-                    "confidence": float(max(p_yes, 1.0 - p_yes)),
+                    "confidence": noul_confidence(p_yes),
                     "label_mass": label_mass,
                 }
 
@@ -597,7 +600,10 @@ class HybridBackend:
 
         try:
             answers = self._call(self.sglang, state, questions, images, videos)
-        except SGLangError as exc:
+        except Exception as exc:
+            # Any escalation failure fails open to the local answers (see
+            # the class docstring): the local judge already answered, so
+            # dropping its answers would be strictly worse.
             meta = dict(local_answers.get("_meta", {}))
             meta["backend"] = "hybrid/local"
             meta["escalated"] = False
@@ -614,12 +620,26 @@ class HybridBackend:
 
 
 def decide_fn_for(engine: Any):
-    """Adapt any engine with .systemone(state, questions) to a loop callback.
+    """Adapt any engine to a See-Decide-Act loop judge.
 
-    Returns fn(state, questions) -> answers. Lets agent loops (see
-    examples/demo_decision_loop.py) swap the local GLiClass engine and the
-    SGLang backend without changing loop code.
+    Returns fn(state, questions, images, videos) -> answers matching the
+    DecisionLoop judge protocol. Non-empty media is forwarded only for
+    keywords the engine declares, so older stubs with
+    ``systemone(state, questions)`` keep working. Lets agent loops (see
+    examples/demo_decision_loop.py) swap engines without changing loop code.
     """
-    def fn(state: str, questions: List[Dict[str, Any]]) -> Dict[str, Any]:
-        return engine.systemone(state, questions)
+    try:
+        params = inspect.signature(engine.systemone).parameters
+    except (TypeError, ValueError):
+        params = {}
+
+    def fn(state: str, questions: List[Dict[str, Any]],
+           images: Any = (), videos: Any = ()) -> Dict[str, Any]:
+        kwargs: Dict[str, Any] = {}
+        if images and "images" in params:
+            kwargs["images"] = images
+        if videos and "videos" in params:
+            kwargs["videos"] = videos
+        return engine.systemone(state, questions, **kwargs)
+
     return fn

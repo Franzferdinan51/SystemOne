@@ -437,6 +437,5 @@ def test_load_calibrator_file_dispatches_by_kind(tmp_path):
 
     legacy = tmp_path / "legacy.pkl"
     legacy.write_bytes(pickle.dumps({"not": "a calibrator"}))
-    with pytest.warns(DeprecationWarning, match="re-save as JSON"):
-        got = load_calibrator_file(str(legacy))
-    assert got == {"not": "a calibrator"}  # legacy path preserves behavior
+    with pytest.raises(ValueError, match="not JSON"):
+        load_calibrator_file(str(legacy))

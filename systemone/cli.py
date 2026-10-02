@@ -502,7 +502,8 @@ def build_parser() -> argparse.ArgumentParser:
     p_decide.add_argument(
         "--criteria-json", default=None, metavar="JSON",
         help='criteria as JSON (choice: {"label": "desc"}, '
-              'score: ["level 1", "level 2"], noul: {"true": "..", "false": ".."})')
+              'score: ["level 1", "level 2"], '
+              'noul: {"yes": "..", "no": ".."} or {"true": "..", "false": ".."})')
     p_decide.add_argument("--json", action="store_true",
                           help="emit the raw decide payload as JSON")
     p_decide.add_argument(

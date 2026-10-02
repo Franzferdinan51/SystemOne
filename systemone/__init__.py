@@ -82,7 +82,12 @@ from .jev_backend import JevDecideBackend, JevError
 from .jevk5_backend import JevK5Error, JevK5ServerBackend
 from .loop import ActResult, DecisionLoop, LoopResult, Observation, Step, run_loop
 from .rerank_backend import OnnxCrossEncoder, RerankBackend
-from .sglang_backend import HybridBackend, SGLangBackend, SGLangError
+from .sglang_backend import (
+    HybridBackend,
+    SGLangBackend,
+    SGLangError,
+    decide_fn_for,
+)
 
 __all__ = [
     "SystemOne",
@@ -90,6 +95,7 @@ __all__ = [
     "SGLangBackend",
     "SGLangError",
     "HybridBackend",
+    "decide_fn_for",
     "JevK5ServerBackend",
     "JevK5Error",
     "JevDecideBackend",

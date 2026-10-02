@@ -112,11 +112,11 @@ def test_client_decide(monkeypatch):
     decision = {
         "type": "noul", "label": "yes",
         "probabilities": {"yes": 0.8, "no": 0.2},
-        "confidence": 0.8, "latency_ms": 3.1, "backend": "jeff1",
+        "confidence": 0.8, "latency_ms": 3.1, "backend": "decider",
     }
     _install_urlopen(monkeypatch, {("POST", "/v1/systemone/decide"): decision})
     out = SystemOneClient(BASE).decide("s", "is it?", type="noul")
-    assert out["backend"] == "jeff1"
+    assert out["backend"] == "decider"
     assert out["probabilities"]["yes"] == 0.8
 
 
@@ -167,6 +167,15 @@ def test_client_unreachable_maps_to_shim_error(monkeypatch):
     assert "cannot reach shim" in str(excinfo.value)
 
 
+def test_client_raw_timeout_and_oserror_map_to_shim_error(monkeypatch):
+    for boom in (TimeoutError("timed out"), OSError("down")):
+        routes = {("GET", "/healthz"): boom}
+        _install_urlopen(monkeypatch, routes)
+        with pytest.raises(ShimError) as excinfo:
+            SystemOneClient(BASE).health()
+        assert "cannot reach shim" in str(excinfo.value)
+
+
 # -- CLI -----------------------------------------------------------------
 
 
@@ -202,18 +211,18 @@ class _FakeClient:
             return {
                 "type": "score", "level": "1",
                 "distribution": {"0": 0.1, "1": 0.7, "2": 0.2},
-                "confidence": 0.7, "latency_ms": 4.2, "backend": "jeff1",
+                "confidence": 0.7, "latency_ms": 4.2, "backend": "decider",
             }
         if type == "noul":
             return {
                 "type": "noul", "label": "yes",
                 "probabilities": {"yes": 0.82, "no": 0.18},
-                "confidence": 0.82, "latency_ms": 4.2, "backend": "jeff1",
+                "confidence": 0.82, "latency_ms": 4.2, "backend": "decider",
             }
         return {
             "type": "choice", "label": "a",
             "probabilities": {"a": 0.75, "b": 0.25},
-            "confidence": 0.75, "latency_ms": 4.2, "backend": "jeff1",
+            "confidence": 0.75, "latency_ms": 4.2, "backend": "decider",
         }
 
     def status(self, probe=True):
@@ -221,7 +230,7 @@ class _FakeClient:
         return {
             "shim_url": self.base_url,
             "shim": {"ok": True, "model": "fake-engine"},
-            "decision": {"backend": "jeff1", "latency_ms": 4.2,
+            "decision": {"backend": "decider", "latency_ms": 4.2,
                          "confidence": 0.9} if probe else None,
         }
 
@@ -258,7 +267,7 @@ def test_cli_decide_choice(fake_client, capsys):
     assert cli.main(argv) == 0
     out = capsys.readouterr().out
     assert "choice     : a  (confidence 0.7500)" in out
-    assert "backend    : jeff1" in out
+    assert "backend    : decider" in out
     _, _, _, criteria, dtype = _FakeClient.last.calls[0]
     assert criteria == {"a": "first", "b": "second"}
     assert dtype == "choice"
@@ -286,14 +295,14 @@ def test_cli_status_human(fake_client, capsys):
     assert cli.main(["status"]) == 0
     out = capsys.readouterr().out
     assert "ok       : yes" in out
-    assert "backend=jeff1" in out
+    assert "backend=decider" in out
 
 
 def test_cli_status_json(fake_client, capsys):
     assert cli.main(["status", "--json"]) == 0
     payload = json.loads(capsys.readouterr().out)
     assert payload["shim"]["ok"] is True
-    assert payload["decision"]["backend"] == "jeff1"
+    assert payload["decision"]["backend"] == "decider"
 
 
 def test_cli_shim_error_exit_code(monkeypatch, capsys):
@@ -350,13 +359,13 @@ def test_mcp_route_tool(fake_mcp_client):
 def test_mcp_decide_tool(fake_mcp_client):
     out = _mcp()._decide_impl("s", "pick", criteria={"a": None, "b": None})
     assert out["label"] == "a"
-    assert out["backend"] == "jeff1"
+    assert out["backend"] == "decider"
 
 
 def test_mcp_status_tool(fake_mcp_client):
     out = _mcp()._status_impl()
     assert out["shim"]["ok"] is True
-    assert out["decision"]["backend"] == "jeff1"
+    assert out["decision"]["backend"] == "decider"
 
 
 def test_mcp_rank_plans_tool(monkeypatch):

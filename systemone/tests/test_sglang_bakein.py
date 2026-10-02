@@ -258,6 +258,21 @@ def test_hybrid_escalation_failure_fails_open():
     assert out["action"]["choice"] == "up"  # local answers preserved
 
 
+def test_hybrid_non_sglang_escalation_error_fails_open():
+    class WeirdSGLang:
+        def systemone(self, state, questions, **kwargs):
+            raise ValueError("weird backend bug")
+
+    local = StubEngine(confidence=0.2)
+    hybrid = HybridBackend(
+        local_engine=local, sglang=WeirdSGLang(), escalate_below=0.6
+    )
+    out = hybrid.systemone("state", _questions())
+    assert out["_meta"]["backend"] == "hybrid/local"
+    assert "weird backend bug" in out["_meta"]["escalation_error"]
+    assert out["action"]["choice"] == "up"  # local answers preserved
+
+
 def test_hybrid_without_sglang_is_pure_local():
     local = StubEngine(confidence=0.1)
     hybrid = HybridBackend(local_engine=local, sglang=None, escalate_below=0.6)
@@ -282,6 +297,55 @@ def test_hybrid_with_neither_side_raises():
         pass
     else:
         raise AssertionError("expected SGLangError")
+
+
+# -- loop adapter -------------------------------------------------------------
+
+
+def test_decide_fn_for_matches_loop_protocol():
+    from systemone import decide_fn_for
+
+    seen = {}
+
+    class MediaEngine:
+        def systemone(self, state, questions, images=None, videos=None):
+            seen["kwargs"] = (images, videos)
+            return {"a": {"type": "noul"}, "_meta": {}}
+
+    fn = decide_fn_for(MediaEngine())
+    fn("s", [], ["i"], ["v"])
+    assert seen["kwargs"] == (["i"], ["v"])
+    fn("s", [], [], [])
+    assert seen["kwargs"] == (None, None)
+
+    class OldStub:
+        def systemone(self, state, questions):
+            return {"a": 1}
+
+    assert decide_fn_for(OldStub())("s", [], ["i"], ["v"]) == {"a": 1}
+
+
+# -- confidence uniformity ------------------------------------------------
+
+
+def test_backend_confidence_uses_typesafe_helpers(monkeypatch):
+    from systemone.patterns import choice_confidence, score_confidence
+
+    def fake_urlopen(req, timeout=None):
+        return _FakeResp({"answers": {
+            "c": {"type": "choice", "choice": "up",
+                  "probabilities": {"up": 0.7, "down": 0.3}},
+            "s": {"type": "score",
+                  "probabilities": {"0": 0.1, "1": 0.2, "2": 0.7}},
+        }})
+
+    monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
+    out = SGLangBackend().systemone("s", [
+        {"name": "c", "type": "choice", "options": ["up", "down"]},
+        {"name": "s", "type": "score", "levels": ["0", "1", "2"]},
+    ])
+    assert out["c"]["confidence"] == choice_confidence([0.7, 0.3])
+    assert out["s"]["confidence"] == score_confidence([0.1, 0.2, 0.7])
 
 
 # -- client + shim HTTP -------------------------------------------------

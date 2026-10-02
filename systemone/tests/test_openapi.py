@@ -56,7 +56,7 @@ def test_spec_parses_and_lists_all_routes():
     spec = _load_spec()
     assert spec["openapi"].startswith("3.")
     assert set(spec["paths"]) == {
-        "/", "/healthz", "/openapi.json",
+        "/", "/healthz", "/metrics", "/openapi.json",
         "/v1/systemone", "/v1/decisions",
         "/v1/decide", "/v1/decide/info",
         "/v1/systemone/route", "/v1/systemone/rank-plans",

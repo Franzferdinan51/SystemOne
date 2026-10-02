@@ -460,10 +460,10 @@ def systemone_decide(
     """One typed decision via the live shim's decide endpoint.
 
     type: "choice" | "noul" | "score". criteria: choice -> {label: desc},
-    noul -> {"true": ..., "false": ...} (optional), score -> ordered list of
-    level descriptions. Returns label/level + probabilities/distribution +
-    confidence + backend ("jeff1" sidecar or "fallback"). No model is loaded
-    by this tool.
+    noul -> {"yes": ..., "no": ...} or {"true": ..., "false": ...}
+    (optional), score -> ordered list of level descriptions. Returns
+    label/level + probabilities/distribution + confidence + backend
+    ("decider" sidecar or "fallback"). No model is loaded by this tool.
     """
     return _decide_impl(state, instructions, criteria=criteria, type=type)
 

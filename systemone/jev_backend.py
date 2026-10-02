@@ -107,22 +107,19 @@ def build_state(
 ) -> Any:
     """Assemble a JEV ``state`` value: text (+ optional image parts).
 
-    Text-only states stay plain strings/JSON (the server's text path);
-    when images are present the state becomes an ordered list mixing the
-    text with ``{"image": ...}`` parts, per the model card.
+    Imageless states pass through untouched — strings stay strings, JSON
+    values (including dicts) stay as-is, lists stay lists. When images are
+    present the state becomes an ordered list mixing the original state
+    with ``{"image": ...}`` parts, per the model card.
     """
-    parts: List[Any] = []
+    imgs = [image_part(img) for img in (images or [])]
+    if not imgs:
+        return state if state is not None else ""
     if isinstance(state, list):
-        parts = list(state)
-    elif state is not None:
-        parts = [state] if isinstance(state, str) else [state]
-    for img in images or []:
-        parts.append(image_part(img))
-    if not images and not any(isinstance(p, dict) for p in parts):
-        if len(parts) == 1:
-            return parts[0]
-        return parts if parts else ""
-    return parts
+        return list(state) + imgs
+    if state is None:
+        return imgs
+    return [state] + imgs
 
 
 class JevDecideBackend:
@@ -305,13 +302,16 @@ class JevDecideBackend:
         idx = int(payload.get("choice_index", max(range(len(probs)), key=probs.__getitem__)))
         if not (0 <= idx < len(opts)):
             idx = max(range(len(probs)), key=probs.__getitem__)
+        # The probabilities are the source of truth: derive the choice from
+        # the normalized index instead of trusting a possibly disagreeing
+        # server label, so choice == options[choice_index] always holds.
         return {
             "kind": kind,
             "effective_kind": str(payload.get("effective_kind", kind)),
             "options": opts,
             "probabilities": probs,
             "choice_index": idx,
-            "choice": payload.get("choice", opts[idx]),
+            "choice": opts[idx],
             "adaptation": payload.get("adaptation", "native"),
             "protocol": payload.get("protocol", "jev27-bare-v1"),
             "model": payload.get("model", self.model),
@@ -469,7 +469,11 @@ class JevDecideBackend:
         video). Returns {name: answer_dict, ..., "_meta": {...}} with the
         same answer shapes as the local engine.
         """
-        from .patterns import choice_confidence
+        from .patterns import (
+            choice_confidence,
+            noul_confidence,
+            score_confidence,
+        )
 
         questions = list(questions)
         if not questions:
@@ -503,10 +507,15 @@ class JevDecideBackend:
                     )
                     probs = dict(zip(resp["options"], resp["probabilities"]))
                 else:
+                    if len(levels) < 2:
+                        raise JevError(
+                            f"score question {name!r} needs >= 2 levels",
+                            hint="provide 'levels' with at least 2 entries",
+                        )
                     # Custom level sets travel as a choice over the levels.
                     resp = self.decide(
                         "choice", state, prompt or "Rate the input above.",
-                        levels or ["0", "1"], images=images,
+                        levels, images=images,
                     )
                     probs = dict(zip(resp["options"], resp["probabilities"]))
                 best = max(probs, key=probs.get) if probs else None
@@ -525,7 +534,9 @@ class JevDecideBackend:
                     "level": best,
                     "distribution": probs,
                     "score": float(wmean),
-                    "confidence": float(max(probs.values())) if probs else 0.0,
+                    "confidence": score_confidence(
+                        [probs[o] for o in resp["options"]])
+                    if probs else 0.0,
                     "label_mass": None,
                     "legend": dict(q.get("legend") or {}),
                 }
@@ -547,7 +558,7 @@ class JevDecideBackend:
                     "type": "noul",
                     "probability": p_true,
                     "answer": bool(p_true >= 0.5),
-                    "confidence": float(max(p_true, 1.0 - p_true)),
+                    "confidence": noul_confidence(p_true),
                     "label_mass": None,
                 }
         answers["_meta"] = {

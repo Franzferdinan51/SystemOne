@@ -86,7 +86,7 @@ class SystemOneClient:
                 status=exc.code,
                 payload=parsed,
             ) from exc
-        except urllib.error.URLError as exc:
+        except (urllib.error.URLError, TimeoutError, OSError) as exc:
             reason = getattr(exc, "reason", exc)
             raise ShimError(
                 f"cannot reach shim at {self.base_url}{path}: {reason}"
@@ -131,10 +131,10 @@ class SystemOneClient:
         """POST /v1/systemone/decide — one typed decision.
 
         type: "choice" | "noul" | "score". criteria: choice -> {label: desc},
-        noul -> {"true": ..., "false": ...} (optional), score -> ordered list
-        of level descriptions. Returns the decide payload, including
-        "backend": "jeff1" | "decider" (whichever engine the sidecar ran)
-        or "fallback" (local GLiClass fail-open).
+        noul -> {"yes": ..., "no": ...} or {"true": ..., "false": ...}
+        (optional), score -> ordered list of level descriptions. Returns
+        the decide payload, including "backend": "decider" (sidecar) or
+        "fallback" (local GLiClass fail-open).
         """
         body: Dict[str, Any] = {
             "state": state,
@@ -190,7 +190,7 @@ class SystemOneClient:
     def status(self, probe: bool = True) -> Dict[str, Any]:
         """Composite health: shim liveness plus the decision backend in use.
 
-        The decision backend ("jeff1" | "decider" sidecar engine vs
+        The decision backend ("decider" sidecar engine vs
         "fallback" GLiClass) is only observable by asking for a decision,
         so status() runs one tiny noul probe unless probe=False.
         """

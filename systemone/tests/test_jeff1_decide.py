@@ -317,3 +317,71 @@ def test_decide_reports_decider_backend(sidecar, monkeypatch):
     code, body = _post(sidecar, payload)
     assert code == 200
     assert body["backend"] == "decider"
+
+
+# -- noul criteria spellings --------------------------------------------------------
+
+
+def test_noul_accepts_true_false_spelling(sidecar):
+    code, _ = _post(sidecar, {
+        "state": "x", "instructions": "Is it up?", "type": "noul",
+        "criteria": {"true": "Up.", "false": "Down."},
+    })
+    assert code == 200
+    kind, _, _, yes_desc, no_desc = sidecar.engine.calls[-1]
+    assert kind == "noul"
+    assert (yes_desc, no_desc) == ("Up.", "Down.")
+
+
+def test_noul_rejects_unknown_criteria_keys(sidecar):
+    code, body = _post(sidecar, {
+        "state": "x", "instructions": "Is it up?", "type": "noul",
+        "criteria": {"maybe": "m"},
+    })
+    assert code == 400
+    assert "unknown noul criteria keys" in body["error"]
+
+
+# -- hardening ------------------------------------------------------------------
+
+
+def _post_path(server, path, payload, headers=None):
+    url = f"http://127.0.0.1:{server.server_address[1]}{path}"
+    req = urllib.request.Request(
+        url, data=json.dumps(payload).encode(),
+        headers={"Content-Type": "application/json", **(headers or {})})
+    try:
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            return resp.status, json.loads(resp.read())
+    except urllib.error.HTTPError as exc:
+        return exc.code, json.loads(exc.read())
+
+
+def test_rank_plans_cap_is_400(sidecar):
+    body = {"task": "t", "plans": [
+        {"id": f"p{i}", "text": "do it"} for i in range(33)]}
+    code, _ = _post_path(sidecar, "/v1/jeff1/rank-plans", body)
+    assert code == 400
+    body["plans"] = body["plans"][:32]
+    code, _ = _post_path(sidecar, "/v1/jeff1/rank-plans", body)
+    assert code == 200
+
+
+def test_huge_body_rejected_with_413(sidecar, monkeypatch):
+    from systemone import patterns
+
+    monkeypatch.setattr(patterns, "MAX_BODY_BYTES", 64)
+    code, body = _post(sidecar, {"state": "x" * 1000,
+                                 "instructions": "Q?", "type": "noul"})
+    assert code == 413
+    assert "too large" in body["error"]
+
+
+def test_auth_gate_401_and_200(sidecar, monkeypatch):
+    monkeypatch.setenv("SYSTEMONE_API_TOKEN", "s3cret")
+    payload = {"state": "x", "instructions": "Q?", "type": "noul"}
+    code, _ = _post(sidecar, payload)
+    assert code == 401
+    code, _ = _post_path(sidecar, "/v1/jeff1/decide", payload,
+                         {"Authorization": "Bearer s3cret"})
+    assert code == 200

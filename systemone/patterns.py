@@ -35,6 +35,65 @@ import numpy as np
 # cap only bounds memory/log noise — it does not change judgments.
 MAX_STATE_CHARS = 6000
 
+# Largest request body the shim/sidecar will read (DoS bound). Legitimate
+# decision requests are kilobytes; even media-heavy Clef bodies with data
+# URLs stay far below this. Over-cap requests get HTTP 413.
+MAX_BODY_BYTES = 2 * 1024 * 1024
+
+# Largest question batch per request (each question is inference work).
+MAX_QUESTIONS_PER_REQUEST = 64
+
+# Largest plan list per rank-plans request (one inference call per plan).
+MAX_PLANS_PER_REQUEST = 32
+
+
+class BodyTooLarge(Exception):
+    """Request body exceeds MAX_BODY_BYTES (HTTP 413)."""
+
+
+def check_body_length(headers: Any) -> int:
+    """Validate Content-Length against MAX_BODY_BYTES.
+
+    Returns the byte count to read. Garbage values raise ValueError (HTTP
+    400); over-cap values raise BodyTooLarge (HTTP 413).
+    """
+    raw = headers.get("Content-Length", 0) if headers is not None else 0
+    try:
+        length = int(raw)
+    except (TypeError, ValueError):
+        raise ValueError(f"bad Content-Length: {raw!r}") from None
+    if length < 0:
+        raise ValueError(f"bad Content-Length: {raw!r}")
+    if length > MAX_BODY_BYTES:
+        raise BodyTooLarge(
+            f"request body {length} bytes exceeds the {MAX_BODY_BYTES}-byte cap"
+        )
+    return length
+
+
+API_TOKEN_ENV = "SYSTEMONE_API_TOKEN"
+
+
+def api_token_required() -> str:
+    """Shared-token gate for mutating routes ("" = open, the default).
+
+    When $SYSTEMONE_API_TOKEN is set, POST routes require
+    `Authorization: Bearer <token>` and answer 401 otherwise. Unset keeps
+    the historic open-localhost behavior — fail-open by default.
+    """
+    return (os.environ.get(API_TOKEN_ENV) or "").strip()
+
+
+def api_token_ok(authorization: str | None) -> bool:
+    """True when the request satisfies the shared-token gate."""
+    import hmac
+
+    want = api_token_required()
+    if not want:
+        return True
+    got = (authorization or "").strip()
+    return hmac.compare_digest(got, f"Bearer {want}")
+
 # Smallest-first candidates; the first that loads wins.
 MODEL_CANDIDATES = [
     "knowledgator/gliclass-edge-v3.0",

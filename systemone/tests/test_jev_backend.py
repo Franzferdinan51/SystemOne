@@ -184,6 +184,51 @@ def test_build_state_text_only_stays_scalar():
         "hello", {"image": "https://e.com/x.png"}]
 
 
+def test_build_state_json_and_lists_pass_through():
+    assert build_state({"a": 1}) == {"a": 1}
+    assert build_state(["a", "b"]) == ["a", "b"]
+    assert build_state(None) == ""
+    assert build_state({"a": 1}, ["https://e.com/x.png"]) == [
+        {"a": 1}, {"image": "https://e.com/x.png"}]
+
+
+def test_decide_derives_choice_from_index(monkeypatch):
+    def fake_urlopen(req, timeout=None):
+        return _FakeResp({
+            "options": ["a", "b"], "probabilities": [0.8, 0.2],
+            "choice_index": 0, "choice": "b",  # disagreeing label
+        })
+
+    monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
+    eng = JevDecideBackend(base_url="http://jev-test:8000")
+    resp = eng.decide("choice", "s", "Q?", ["a", "b"])
+    assert resp["choice"] == "a"
+    assert resp["options"][resp["choice_index"]] == resp["choice"]
+
+
+def test_systemone_empty_score_levels_raise():
+    eng = JevDecideBackend(base_url="http://jev-test:8000")
+    with pytest.raises(JevError, match=">= 2 levels"):
+        eng.systemone("s", [{"name": "x", "type": "score", "levels": []}])
+
+
+def test_score_confidence_uses_typesafe_helper(monkeypatch):
+    from systemone.patterns import score_confidence
+
+    def fake_urlopen(req, timeout=None):
+        return _FakeResp({
+            "options": ["0", "1", "2"], "probabilities": [0.1, 0.2, 0.7],
+            "choice_index": 2, "choice": "2",
+        })
+
+    monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
+    eng = JevDecideBackend(base_url="http://jev-test:8000")
+    out = eng.systemone(
+        "s", [{"name": "x", "type": "score",
+               "levels": ["low", "mid", "high"]}])
+    assert out["x"]["confidence"] == score_confidence([0.1, 0.2, 0.7])
+
+
 def test_vllm_raw_path_uses_bundle_math(monkeypatch, tmp_path):
     bundle = tmp_path / "b"
     (bundle / "adapter_vllm").mkdir(parents=True)

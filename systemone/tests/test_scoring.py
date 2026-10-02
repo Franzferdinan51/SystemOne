@@ -418,6 +418,17 @@ def test_apply_inventory_marks_availability():
     assert reg["balanced"]["models"][0]["available"] is False
 
 
+def test_registry_preseeds_availability_flags():
+    # load_registry must pre-seed "available" on every model so the
+    # background refresher only rebinds keys (no dict growth mid-iteration).
+    from systemone.shim import load_registry
+
+    reg = load_registry()
+    for entry in reg.values():
+        for m in entry.get("models", []) or []:
+            assert "available" in m
+
+
 # -- plan ranking -------------------------------------------------------------------
 
 def test_estimate_steps_enumerated():
@@ -447,6 +458,22 @@ def test_rank_plans_fail_open_keeps_order_with_none_scores():
     assert all(r["score"] is None for r in ranked)
 
 
+def test_rank_plans_one_malformed_answer_degrades_only_its_plan():
+    class JunkEngine:
+        def systemone(self, state, questions):
+            return {
+                "plan_0": {"type": "noul", "probability": 0.9},
+                "plan_1": {"type": "noul", "probability": "junk"},
+            }
+
+    plans = [{"id": "a", "text": "1. x"}, {"id": "b", "text": "1. y"}]
+    ranked = rank_plans(JunkEngine(), "do it", plans)
+    by_id = {r["id"]: r for r in ranked}
+    assert by_id["a"]["p_success"] == pytest.approx(0.9)
+    assert by_id["b"]["score"] is None
+    assert by_id["b"]["p_success"] is None
+
+
 # -- route_decision scoring block -----------------------------------------------------
 
 def test_route_with_scoring_adds_surface():
@@ -468,6 +495,20 @@ def test_route_with_scoring_adds_surface():
     # confidence is now the calibrated top-1 probability
     assert route["confidence"] == pytest.approx(
         max(route["calibrated_probabilities"].values()), abs=1e-3)
+
+
+def test_route_confidence_follows_winner_not_top1():
+    engine = ScoringStubEngine()
+    # quality bias lifts the tier above the distribution peak: tier and
+    # confidence must agree with each other, not with the top-1.
+    route = route_decision(
+        engine, _medium_task(), _cands(), "quality",
+        scoring=_scoring_ctx())
+    top1 = max(route["calibrated_probabilities"],
+               key=route["calibrated_probabilities"].get)
+    assert route["tier"] != top1
+    assert route["confidence"] == pytest.approx(
+        route["calibrated_probabilities"][route["tier"]], abs=1e-3)
 
 
 def test_route_without_scoring_is_legacy_shape():

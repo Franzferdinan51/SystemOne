@@ -80,6 +80,10 @@ into shipping products:
   P(true) alias, and `usage.output_tokens = 0`; all engines share one
   `images=`/`videos=` protocol with honest drop reporting. See [Clef
   compatibility](#clef-compatibility-cloudflareclef).
+- **Hardening + ops** — 2 MB body cap (413), 64-question / 32-plan batch
+  caps, JSON-only calibrators (the pickle fallback is gone), opt-in
+  `SYSTEMONE_API_TOKEN` auth on POST routes, Prometheus `/metrics`, and
+  `X-Request-ID` tracing on every response. See [Operations](#operations-auth-limits-metrics).
 
 ## Map to Jev's primitives
 
@@ -474,7 +478,7 @@ you select (`--engine` flag overrides the env var):
 | `onnx` | Always the local ONNX cross-encoder judge (default Xenova/bge-reranker-base int8; `RERANK_MODEL_ID` / `RERANK_ONNX_FILE` / `RERANK_REVISION` override). Needs `onnxruntime` + `tokenizers` + `huggingface_hub`. Never auto-selected (it downloads weights). |
 
 `GET /healthz` reports the live choice (`{"ok": true, "model": ...,
-"backend": "sglang"|"hybrid"|"jevk5"|"rerank"|"local"|"custom"}`), and
+"backend": "local"|"sglang"|"hybrid"|"jev"|"jevk5"|"rerank"|"custom"}`), and
 `systemone status` prints it. Every failure path stays fail-open, per the
 house rule.
 `GET /openapi.json` serves the machine-readable API spec
@@ -548,6 +552,24 @@ HTTP round trip, human-approved dry-run plan before anything moves.
 cold and prefix-cached requests. The calibration battery should pin or
 quantify cache state before comparing SGLang judges against the local
 engine — otherwise you're measuring the cache, not the model.
+
+## Operations: auth, limits, metrics
+
+- **Auth (opt-in)** — set `SYSTEMONE_API_TOKEN` and every POST route on
+  the shim and the sidecar requires `Authorization: Bearer <token>`
+  (401 otherwise). Unset keeps the historic open-localhost behavior.
+  GETs (`/healthz`, `/metrics`, …) stay open for probes and scrapers.
+- **Request limits** — bodies over 2 MB get 413; `/v1/decisions` and
+  `/v1/systemone` cap at 64 questions per request; rank-plans caps at 32
+  plans. Constants live in `systemone/patterns.py`
+  (`MAX_BODY_BYTES`, `MAX_QUESTIONS_PER_REQUEST`,
+  `MAX_PLANS_PER_REQUEST`).
+- **Metrics** — `GET /metrics` serves Prometheus counters
+  (`systemone_requests_total`, `systemone_request_latency_ms_sum`) by
+  endpoint and status.
+- **Tracing** — every response carries `X-Request-ID` (client-supplied
+  values pass through, else a fresh 16-hex ID), and the JSONL decision
+  log records it per request.
 
 ## Design notes
 
@@ -646,6 +668,9 @@ TypeSafe's confidence model, adapted for local use:
     index — 1 when all mass sits on one level, lower as mass spreads onto
     distant levels
   - **noul:** `max(P(yes), P(no))` — the probability of the chosen answer
+
+  Every engine (`local`, `sglang`, `jev`, `jevk5`, `onnx`) reports these
+  definitions, so gates and thresholds compare across backends.
 - **Low confidence is diagnostic.** On a choice it usually means none of the
   options is a clear winner; on a score it means the levels are ambiguous,
   multi-dimensional, or the state doesn't contain enough to go on. Treat

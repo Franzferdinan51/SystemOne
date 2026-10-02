@@ -145,7 +145,8 @@ class DecisionLoop:
         self, memory: Sequence[str], obs_text: str, tick: int
     ) -> str:
         """Cache-friendly state: fixed prefix, memory, fresh observation."""
-        mem = "\n".join(memory[-self.memory_lines:]) if memory else "(no history yet)"
+        tail = list(memory[-self.memory_lines:] if self.memory_lines > 0 else [])
+        mem = "\n".join(tail) if tail else "(no history yet)"
         prefix = f"{self.system_prompt}\n\n" if self.system_prompt else ""
         return (
             f"{prefix}"
@@ -155,6 +156,7 @@ class DecisionLoop:
 
     def run(self, env: Env, questions: Sequence[Dict[str, Any]]) -> LoopResult:
         """Run See > Decide > Act until done, stalled, or budget."""
+        self.guard.reset()
         memory: List[str] = []
         steps: List[Step] = []
         for tick in range(self.budget):

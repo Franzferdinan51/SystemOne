@@ -249,6 +249,7 @@ _PRIOR_PROBES = (
 
 _priors_cache: Dict[tuple, Dict[str, float]] = {}
 _priors_lock = threading.Lock()
+_inventory_lock = threading.Lock()
 
 
 def _tool_option_text(tool: Dict[str, Any]) -> str:
@@ -548,12 +549,13 @@ def apply_inventory(
     have = set(available_ids)
     tiers = registry.get("tiers", registry)
     if isinstance(tiers, dict):
-        for entry in tiers.values():
-            if not isinstance(entry, dict):
-                continue
-            for m in entry.get("models", []) or []:
-                if isinstance(m, dict) and m.get("model_id"):
-                    m["available"] = m["model_id"] in have
+        with _inventory_lock:
+            for entry in tiers.values():
+                if not isinstance(entry, dict):
+                    continue
+                for m in entry.get("models", []) or []:
+                    if isinstance(m, dict) and m.get("model_id"):
+                        m["available"] = m["model_id"] in have
     return registry
 
 
@@ -642,18 +644,27 @@ def rank_plans(
         ]
     ranked = []
     for i, p in enumerate(plans):
-        ans = answers.get(f"plan_{i}") or {}
-        p_success = float(ans.get("probability", 0.5))
-        steps = estimate_steps(p.get("text") or "")
-        penalty = (round(steps * float(tier_cost) / 100.0, 4)
-                   if tier_cost is not None else 0.0)
-        ranked.append({
-            "id": p.get("id", f"plan_{i}"),
-            "score": round(p_success - penalty, 4),
-            "p_success": round(p_success, 4),
-            "cost_penalty": penalty,
-            "est_steps": steps,
-        })
+        pid = p.get("id", f"plan_{i}")
+        try:
+            ans = answers.get(f"plan_{i}") or {}
+            p_success = float(ans.get("probability", 0.5))
+            steps = estimate_steps(p.get("text") or "")
+            penalty = (round(steps * float(tier_cost) / 100.0, 4)
+                       if tier_cost is not None else 0.0)
+            ranked.append({
+                "id": pid,
+                "score": round(p_success - penalty, 4),
+                "p_success": round(p_success, 4),
+                "cost_penalty": penalty,
+                "est_steps": steps,
+            })
+        except (TypeError, ValueError, ArithmeticError):
+            # One malformed answer degrades its plan, never the ranking.
+            ranked.append({
+                "id": pid, "score": None, "p_success": None,
+                "cost_penalty": None,
+                "est_steps": estimate_steps(p.get("text") or ""),
+            })
     ranked.sort(key=lambda r: (r["score"] is not None, r["score"]),
                 reverse=True)
     return ranked

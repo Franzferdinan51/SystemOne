@@ -71,7 +71,8 @@ def test_translate_question_structured_criteria():
     q = translate_question(
         "click_target",
         {"type": "choice",
-         "criteria": {"1": {"element": "[1] Retry payment", "role": "button"}},
+         "criteria": {"1": {"element": "[1] Retry payment", "role": "button"},
+                      "2": {"element": "[2] Cancel", "role": "button"}},
          "instructions": None},
     )
     assert "[1] Retry payment" in q["prompt"]
@@ -79,7 +80,8 @@ def test_translate_question_structured_criteria():
 
 
 def test_translate_question_string_instructions():
-    q = translate_question("op", {"criteria": {"A": "do a"}, "instructions": "Just pick."})
+    q = translate_question("op", {"criteria": {"A": "do a", "B": "do b"},
+                                   "instructions": "Just pick."})
     assert q["type"] == "choice"  # default type
     assert "Just pick." in q["prompt"]
 

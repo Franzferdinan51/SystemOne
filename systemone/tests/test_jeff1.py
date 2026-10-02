@@ -307,6 +307,14 @@ def test_blend_rankings_5050_and_resort():
     assert by_id["b"]["score"] == round(by_id["b"]["p_success"] - 0.01, 4)
 
 
+def test_blend_garbage_tier_cost_degrades_penalty():
+    gliclass = [_g("a", 0.9)]
+    jeff = [{"id": "a", "p_success": 0.8}]
+    out = blend_rankings(gliclass, jeff, tier_cost="junk")
+    assert out[0]["cost_penalty"] == 0.0
+    assert out[0]["score"] == out[0]["p_success"]
+
+
 def test_blend_missing_jeff_plan_keeps_gliclass_score():
     gliclass = [_g("a", 0.9), _g("b", 0.4)]
     jeff = [{"id": "a", "p_success": 0.8}]  # no "b"

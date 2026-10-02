@@ -39,6 +39,9 @@
             "local",
             "sglang",
             "hybrid",
+            "jev",
+            "jevk5",
+            "rerank",
             "custom"
            ]
           }
@@ -46,6 +49,16 @@
         }
        }
       }
+     }
+    }
+   }
+  },
+  "/metrics": {
+   "get": {
+    "summary": "Prometheus request counters and latency sums",
+    "responses": {
+     "200": {
+      "description": "Prometheus text exposition"
      }
     }
    }
@@ -490,7 +503,7 @@
           ]
          },
          "criteria": {
-          "description": "choice: {label: description}; noul: {true, false} (optional); score: ordered level list"
+          "description": "choice: {label: description}; noul: {yes, no} or {true, false} (optional); score: ordered level list"
          }
         }
        }

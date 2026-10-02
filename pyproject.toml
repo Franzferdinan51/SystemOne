@@ -15,7 +15,8 @@ dependencies = [
     # Slim by default: the SGLang backend, the shim's SGLang-engine mode,
     # and the HTTP client need only numpy + stdlib. The torch/GLiClass
     # local engine lives in the `local` extra below.
-    "numpy",
+    # Floor pins: unpinned deps drift across installs (audit 2026-10-02).
+    "numpy>=1.24",
 ]
 
 [project.optional-dependencies]
@@ -26,9 +27,11 @@ local = [
     # SYSTEMONE_DEVICE=cuda|mps|cpu|auto. For a slim CPU-only Linux
     # install, pre-install torch from the CPU index first (see README):
     #   pip install torch --index-url https://download.pytorch.org/whl/cpu
-    "torch",
+    "torch>=2.0",
     "transformers>=4.40",
-    "huggingface_hub",
+    "huggingface_hub>=0.20",
+    # No version to pin: GLiClass has no PyPI release; the git URL tracks
+    # its default branch. Pin a commit in deploys that need it.
     "gliclass @ git+https://github.com/Franzferdinan51/GLiClass",
 ]
 mcp = [
@@ -37,7 +40,7 @@ mcp = [
     # via mcp's server deps (pip-audit 2026-10-01: CVE-2026-101918 et al).
     "pyjwt>=2.15",
 ]
-dev = ["pytest"]
+dev = ["pytest>=7"]
 
 [project.scripts]
 systemone = "systemone.cli:main"
@@ -45,6 +48,11 @@ systemone-acp = "systemone.acp_server:main"
 
 [tool.setuptools.packages.find]
 include = ["systemone*"]
+
+[tool.setuptools.package-data]
+# The shim/sidecar load these via __file__; without this stanza wheels
+# ship without them and pip installs break at runtime (audit 2026-10-02).
+systemone = ["*.json"]
 
 [tool.pytest.ini_options]
 markers = ["slow: loads real model weights (opt-in; deselect with -m 'not slow')"]

@@ -63,19 +63,19 @@ class _FakeShimHandler(BaseHTTPRequestHandler):
                     "type": "choice", "label": labels[0],
                     "probabilities": {labels[0]: 0.77, labels[1]: 0.23}
                     if len(labels) > 1 else {labels[0]: 1.0},
-                    "confidence": 0.77, "latency_ms": 1.5, "backend": "jeff1",
+                    "confidence": 0.77, "latency_ms": 1.5, "backend": "decider",
                 })
             elif dtype == "score":
                 self._send({
                     "type": "score", "level": "1",
                     "distribution": {"0": 0.2, "1": 0.6, "2": 0.2},
-                    "confidence": 0.6, "latency_ms": 1.5, "backend": "jeff1",
+                    "confidence": 0.6, "latency_ms": 1.5, "backend": "decider",
                 })
             else:
                 self._send({
                     "type": "noul", "label": "yes",
                     "probabilities": {"yes": 0.83, "no": 0.17},
-                    "confidence": 0.83, "latency_ms": 1.5, "backend": "jeff1",
+                    "confidence": 0.83, "latency_ms": 1.5, "backend": "decider",
                 })
         else:
             self._send({"error": "not found"}, 404)

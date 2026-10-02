@@ -163,6 +163,22 @@ def test_videos_reach_judge():
     assert seen[0] == ([], ["https://e.com/v.mp4"])
 
 
+def test_memory_lines_zero_carries_no_history():
+    loop = DecisionLoop(_judge(), memory_lines=0)
+    text = loop.build_state_text(["m1", "m2"], "OBS", 0)
+    assert "m1" not in text and "m2" not in text
+    assert "(no history yet)" in text
+
+
+def test_run_resets_stall_guard_between_runs():
+    loop = DecisionLoop(_judge(), budget=5)
+    first = loop.run(ScriptEnv([(False, False)] * 5), _questions())
+    assert first.outcome == "stalled"
+    second = loop.run(ScriptEnv([(True, True)]), _questions())
+    assert second.outcome == "done"
+    assert second.steps[0].status == "ok"
+
+
 def test_step_records_telemetry():
     env = ScriptEnv([(True, True)])
     result = run_loop(env, _judge(), _questions(), budget=5)

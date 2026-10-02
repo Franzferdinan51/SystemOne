@@ -31,6 +31,7 @@ Endpoints:
                               options, images in state); native on the jev
                               engine, text projection elsewhere (see below)
     GET  /v1/decide/info      option limit, kinds, image support, backend
+    GET  /metrics            Prometheus request counters + latency sums
     POST /v1/systemone/route  model router: pick the cheapest sufficient
                               local tier for a task (see below)
     POST /v1/systemone/rank-plans
@@ -109,11 +110,20 @@ import re
 import sys
 import threading
 import time
+import uuid
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from logging.handlers import RotatingFileHandler
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
-from .patterns import MAX_STATE_CHARS, validate_choice
+from .patterns import (
+    MAX_PLANS_PER_REQUEST,
+    MAX_QUESTIONS_PER_REQUEST,
+    MAX_STATE_CHARS,
+    BodyTooLarge,
+    api_token_ok,
+    check_body_length,
+    validate_choice,
+)
 
 try:
     from .api import SystemOne
@@ -176,6 +186,15 @@ def load_registry(path: str | None = None) -> Dict[str, Dict[str, Any]]:
     tiers = data.get("tiers", data)
     if not isinstance(tiers, dict) or not tiers:
         raise ValueError("model registry must define a non-empty 'tiers' mapping")
+    # Pre-seed availability flags so the background inventory refresher only
+    # ever rebinds existing keys (atomic under the GIL) instead of growing
+    # model dicts while request threads iterate them (RuntimeError).
+    for entry in tiers.values():
+        if not isinstance(entry, dict):
+            continue
+        for m in entry.get("models", []) or []:
+            if isinstance(m, dict) and m.get("model_id"):
+                m.setdefault("available", False)
     return tiers
 
 
@@ -534,8 +553,8 @@ def route_decision(
     "registry": {...}}), the route dict additionally gains the calibrated
     decision surface: calibrated_probabilities, margin, uncertain,
     ranked_models, ranked_tools/tool_scoring. confidence becomes the
-    calibrated P(top1). Without `scoring` the legacy shape is returned
-    unchanged (backward compatible).
+    (calibrated) probability of the routed tier. Without `scoring` the
+    legacy shape is returned unchanged (backward compatible).
 
     Returns the {"model_id", "tier", "rationale", "confidence",
     "probabilities", "cost_bias", "deterministic_tier", "signals", "effort",
@@ -651,7 +670,8 @@ def _apply_scoring(
     """Additive decision surface; mutates `route`. Never raises.
 
     - calibrated_probabilities / margin / uncertain / calibrated; confidence
-      becomes the calibrated P(top1).
+      becomes the (calibrated) probability of the routed tier — not the
+      distribution top-1, which can differ when rules raise/escalate.
     - uncertain -> effort bumps one level (low->medium->high).
     - ranked_models: top-3 available by expected utility (advisory).
     - ranked_tools: relevance-ranked tools, top-k with relevance >= floor;
@@ -663,7 +683,13 @@ def _apply_scoring(
         route["calibrated_probabilities"] = cal["calibrated_probabilities"]
         route["margin"] = cal["margin"]
         route["uncertain"] = cal["uncertain"]
-        route["confidence"] = cal["confidence"]
+        try:
+            winner_p = float(
+                (cal["calibrated_probabilities"] or {}).get(
+                    route.get("tier"), cal["confidence"]))
+        except (TypeError, ValueError):
+            winner_p = cal["confidence"]
+        route["confidence"] = round(winner_p, 4)
 
         effort = route.get("effort", "medium")
         if cal["uncertain"] and effort in _EFFORT_LEVELS:
@@ -793,6 +819,53 @@ def get_logger() -> Optional[logging.Logger]:
         return logger
 
 
+class Metrics:
+    """Thread-safe per-endpoint request counters and latency sums.
+
+    One instance lives on the server (``server.metrics``); every request
+    records exactly one observation. Renders Prometheus text exposition
+    for GET /metrics. Never raises: observation failures are swallowed so
+    metrics can never break serving.
+    """
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._counts: Dict[tuple, int] = {}
+        self._latency_ms: Dict[tuple, float] = {}
+
+    def observe(self, endpoint: str, status: int, latency_ms: float) -> None:
+        try:
+            key = (str(endpoint), int(status))
+            with self._lock:
+                self._counts[key] = self._counts.get(key, 0) + 1
+                self._latency_ms[key] = (
+                    self._latency_ms.get(key, 0.0) + float(latency_ms))
+        except Exception:
+            pass
+
+    def render_prometheus(self) -> str:
+        with self._lock:
+            items = sorted(self._counts.items())
+            lat = dict(self._latency_ms)
+        lines = [
+            "# HELP systemone_requests_total Requests served by endpoint and status.",
+            "# TYPE systemone_requests_total counter",
+        ]
+        for (endpoint, status), count in items:
+            lines.append(
+                f'systemone_requests_total{{endpoint="{endpoint}",'
+                f'status="{status}"}} {count}')
+        lines += [
+            "# HELP systemone_request_latency_ms_sum Total request latency by endpoint and status.",
+            "# TYPE systemone_request_latency_ms_sum counter",
+        ]
+        for (endpoint, status), count in items:
+            lines.append(
+                f'systemone_request_latency_ms_sum{{endpoint="{endpoint}",'
+                f'status="{status}"}} {lat.get((endpoint, status), 0.0):.1f}')
+        return "\n".join(lines) + "\n"
+
+
 def log_decision(record: Dict[str, Any]) -> None:
     """Append one JSON decision record; never raises."""
     try:
@@ -860,6 +933,10 @@ def translate_question(name: str, q: Dict[str, Any]) -> Dict[str, Any]:
     question ID stands in, so judges always see what is being decided.
     """
     qtype = q.get("type", "choice")
+    if qtype not in ("choice", "score", "noul", "yes_no"):
+        raise ValueError(
+            f"question {name!r} has unknown type {qtype!r}; "
+            "expected one of: choice, score, noul, yes_no")
     if qtype == "yes_no":
         # SGLang boolean question -> local noul; handled before the shape
         # dispatch below since there are no options to speak of.
@@ -885,6 +962,9 @@ def translate_question(name: str, q: Dict[str, Any]) -> Dict[str, Any]:
     if not isinstance(criteria, dict):
         raise ValueError("question criteria must be an object or a list")
     options = list(criteria.keys())
+    if qtype in ("choice", "score") and len(options) < 2:
+        raise ValueError(
+            f"question {name!r} needs >= 2 options/levels, got {len(options)}")
     sglang_question = str(q.get("question") or "") if "criteria" not in q else ""
     prompt_bits = [
         _render_instructions(q.get("instructions"))
@@ -1033,6 +1113,9 @@ def translate_body(body: Dict[str, Any]) -> tuple[str, List[Dict[str, Any]]]:
     ]
     if not questions:
         raise ValueError("request must include at least one question")
+    if len(questions) > MAX_QUESTIONS_PER_REQUEST:
+        raise ValueError(
+            f"'questions' exceeds the {MAX_QUESTIONS_PER_REQUEST}-question cap")
     return state_text, questions
 
 
@@ -1168,6 +1251,9 @@ def translate_decisions_body(
     raw_questions = body.get("questions")
     if not isinstance(raw_questions, list) or not raw_questions:
         raise Unprocessable("'questions' must be a non-empty list")
+    if len(raw_questions) > MAX_QUESTIONS_PER_REQUEST:
+        raise Unprocessable(
+            f"'questions' exceeds the {MAX_QUESTIONS_PER_REQUEST}-question cap")
     questions: List[Dict[str, Any]] = []
     ids: List[str] = []
     for i, rq in enumerate(raw_questions):
@@ -1360,6 +1446,7 @@ def translate_decide_answer(
     answer: Dict[str, Any],
     model: str,
     latency_ms: Any,
+    adaptation: str = "native",
 ) -> Dict[str, Any]:
     """One engine answer -> JEV /v1/decide response mapping."""
     if kind == "noul":
@@ -1387,7 +1474,7 @@ def translate_decide_answer(
         "probabilities": probs,
         "choice_index": idx,
         "choice": options[idx],
-        "adaptation": "native",
+        "adaptation": adaptation,
         "protocol": "jev27-bare-v1",
         "model": model,
         "usage": {},
@@ -1481,13 +1568,21 @@ def _decide_noul_descriptions(raw: Any) -> Tuple[Optional[str], Optional[str]]:
     if raw is None:
         return None, None
     if isinstance(raw, dict):
-        yes_desc, no_desc = raw.get("yes"), raw.get("no")
+        unknown = set(raw) - {"yes", "no", "true", "false"}
+        if unknown:
+            raise ValueError(
+                f"unknown noul criteria keys: {sorted(unknown)}; use "
+                "{yes, no} or {true, false}")
+        if "yes" in raw or "no" in raw:
+            yes_desc, no_desc = raw.get("yes"), raw.get("no")
+        else:
+            yes_desc, no_desc = raw.get("true"), raw.get("false")
     elif isinstance(raw, (list, tuple)) and len(raw) == 2:
         yes_desc, no_desc = raw[0], raw[1]
     else:
         raise ValueError(
-            "'criteria' for noul must be null, a {yes, no} mapping, "
-            "or a 2-item [yes, no] list")
+            "'criteria' for noul must be null, a {yes, no} or {true, false} "
+            "mapping, or a 2-item [yes, no] list")
     for name, desc in (("yes", yes_desc), ("no", no_desc)):
         if desc is not None and not isinstance(desc, str):
             raise ValueError(f"'criteria.{name}' must be a string or null")
@@ -1675,11 +1770,37 @@ class ShimHandler(BaseHTTPRequestHandler):
         self.send_response(code)
         self.send_header("Content-Type", "application/json")
         self.send_header("Content-Length", str(len(data)))
+        self.send_header("X-Request-ID", getattr(self, "_request_id", "-"))
         self.end_headers()
         self.wfile.write(data)
+        self._last_status = code
+
+    def _send_text(self, code: int, text: str, ctype: str = "text/plain") -> None:
+        data = text.encode("utf-8")
+        self.send_response(code)
+        self.send_header("Content-Type", ctype)
+        self.send_header("Content-Length", str(len(data)))
+        self.send_header("X-Request-ID", getattr(self, "_request_id", "-"))
+        self.end_headers()
+        self.wfile.write(data)
+        self._last_status = code
+
+    def _begin_request(self) -> float:
+        """Stamp the request ID (client-supplied or fresh) and start timing."""
+        incoming = (self.headers.get("X-Request-ID") or "").strip()
+        self._request_id = incoming[:64] if incoming else uuid.uuid4().hex[:16]
+        self._last_status = 0
+        return time.perf_counter()
+
+    def _record_metrics(self, t0: float) -> None:
+        metrics = getattr(self.server, "metrics", None)
+        if metrics is None:
+            return
+        latency_ms = round((time.perf_counter() - t0) * 1000.0, 1)
+        metrics.observe(self.path, getattr(self, "_last_status", 0), latency_ms)
 
     def _read_body(self) -> Dict[str, Any]:
-        length = int(self.headers.get("Content-Length", 0))
+        length = check_body_length(self.headers)
         return json.loads(self.rfile.read(length) or b"{}")
 
     def _handle_systemone(self) -> tuple[int, Dict[str, Any]]:
@@ -1803,6 +1924,7 @@ class ShimHandler(BaseHTTPRequestHandler):
         payload = translate_decide_answer(
             kind, options, answers["q"], engine.model_name,
             answers.get("_meta", {}).get("latency_ms"),
+            adaptation="text-projection",
         )
         if images:
             payload["warnings"] = [
@@ -1848,6 +1970,9 @@ class ShimHandler(BaseHTTPRequestHandler):
         plans = body.get("plans")
         if not isinstance(plans, list) or not plans:
             raise ValueError("'plans' must be a non-empty list")
+        if len(plans) > MAX_PLANS_PER_REQUEST:
+            raise ValueError(
+                f"'plans' exceeds the {MAX_PLANS_PER_REQUEST}-plan cap")
         for p in plans:
             if not isinstance(p, dict) or not isinstance(p.get("text"), str):
                 raise ValueError("each plan must be a mapping with a 'text' string")
@@ -1929,10 +2054,10 @@ class ShimHandler(BaseHTTPRequestHandler):
         })
         if jeff1 is not None:
             payload = dict(jeff1)
-            # Trust the sidecar's own backend report (jeff1|decider per
-            # SYSTEMONE_DECISION_BACKEND); fall back to the historic label
-            # for older sidecars that don't report one.
-            payload["backend"] = jeff1.get("backend") or "jeff1"
+            # Trust the sidecar's own backend report ("decider", the sole
+            # backend); fall back to that label for sidecars that don't
+            # report one.
+            payload["backend"] = jeff1.get("backend") or "decider"
             payload["latency_ms"] = round((time.perf_counter() - t0) * 1000.0, 1)
             return 200, payload
 
@@ -1959,6 +2084,13 @@ class ShimHandler(BaseHTTPRequestHandler):
         return 200, payload
 
     def do_GET(self) -> None:  # noqa: N802
+        t0 = self._begin_request()
+        try:
+            self._do_GET()
+        finally:
+            self._record_metrics(t0)
+
+    def _do_GET(self) -> None:
         if self.path in ("/", "/healthz"):
             self._send_json(200, {
                 "ok": True,
@@ -1982,14 +2114,25 @@ class ShimHandler(BaseHTTPRequestHandler):
                 "model": getattr(engine, "model_name", "?"),
                 "temperatures": None,
             })
+        elif self.path == "/metrics":
+            metrics = getattr(self.server, "metrics", None)
+            if metrics is None:
+                self._send_json(500, {"error": "metrics unavailable"})
+            else:
+                self._send_text(200, metrics.render_prometheus())
         else:
             self._send_json(404, {"error": "not found"})
 
     def do_POST(self) -> None:  # noqa: N802
-        t0 = time.perf_counter()
+        t0 = self._begin_request()
         status, payload, extra = 500, {"error": "internal"}, {}
         try:
-            if scoring_disabled() and self.path in (
+            if not api_token_ok(self.headers.get("Authorization")):
+                # Opt-in shared token ($SYSTEMONE_API_TOKEN); unset = open.
+                status, payload = 401, {
+                    "error": "unauthorized: missing or wrong bearer token"
+                }
+            elif scoring_disabled() and self.path in (
                 "/v1/systemone/route", "/v1/systemone/rank-plans"
             ):
                 # Kill switch: refuse routing; upstream consumers fail open.
@@ -2035,6 +2178,8 @@ class ShimHandler(BaseHTTPRequestHandler):
                              "/v1/systemone, /v1/systemone/route, "
                              "/v1/systemone/rank-plans or /v1/systemone/decide"
                 }
+        except BodyTooLarge as e:
+            status, payload = 413, {"error": f"request too large: {e}"}
         except (ValueError, KeyError) as e:
             status, payload = 400, {"error": f"bad request: {e}"}
         except Exception as e:  # never leak internals beyond the class name
@@ -2043,12 +2188,14 @@ class ShimHandler(BaseHTTPRequestHandler):
         if status == 200 and "latency_ms" not in payload:
             payload["latency_ms"] = latency_ms
         self._send_json(status, payload)
+        self._record_metrics(t0)
         log_decision(
             {
                 "endpoint": self.path,
                 "latency_ms": latency_ms,
                 "status": status,
                 "model": getattr(self.server.engine, "model_name", "?"),
+                "request_id": getattr(self, "_request_id", "-"),
                 **extra,
             }
         )
@@ -2274,6 +2421,7 @@ def serve(
     server = ThreadingHTTPServer(("127.0.0.1", port), ShimHandler)
     server.engine = engine  # type: ignore[attr-defined]
     server.engine_backend = engine_backend_name(engine)  # type: ignore[attr-defined]
+    server.metrics = Metrics()  # type: ignore[attr-defined]
     reg = registry if registry is not None else load_registry()
     server.registry = reg  # type: ignore[attr-defined]
     server.calibration = load_calibration(CALIBRATION_PATH)  # type: ignore[attr-defined]
