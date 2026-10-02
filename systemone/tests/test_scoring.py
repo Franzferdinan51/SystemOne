@@ -749,3 +749,43 @@ def test_permute_http_rejects_bad_bodies():
             assert "error" in body
     finally:
         server.shutdown()
+
+
+def test_rank_models_prefer_lists_ids_first():
+    probs = {"economy": 0.2, "balanced": 0.6, "heavy": 0.2}
+    plain = [m["model_id"] for m in rank_models(_registry(), probs, lam=0.0)]
+    assert plain[0] != "h"  # baseline: heavy does not win on utility here
+    preferred = [m["model_id"] for m in rank_models(
+        _registry(), probs, lam=0.0, prefer=["h"])]
+    assert preferred[0] == "h"
+    assert sorted(preferred) == sorted(plain)  # reorder only, same set
+
+
+def test_rank_models_prefer_ignores_unknown_ids():
+    probs = {"economy": 0.2, "balanced": 0.6, "heavy": 0.2}
+    plain = [m["model_id"] for m in rank_models(_registry(), probs, lam=0.0)]
+    assert [m["model_id"] for m in rank_models(
+        _registry(), probs, lam=0.0, prefer=["nope", "missing"])] == plain
+    assert [m["model_id"] for m in rank_models(
+        _registry(), probs, lam=0.0, prefer=[])] == plain
+
+
+def test_bundled_registry_clef_flash_is_rankable_when_live():
+    from systemone.scoring import apply_inventory
+    from systemone.shim import load_registry
+    reg = load_registry()
+    bal = [m for m in reg["balanced"]["models"]
+           if m["model_id"] == "cloudflare_clef-flash"]
+    assert len(bal) == 1
+    entry = bal[0]
+    assert entry["available"] is False  # static false; inventory flips it live
+    assert entry.get("_estimated") is True
+    assert set(entry["quality"]) >= {"economy", "balanced", "heavy"}
+    assert isinstance(entry["cost"], (int, float))
+    # Unloaded -> excluded; loaded (per LM Studio inventory) -> ranked.
+    probs = {"economy": 0.1, "balanced": 0.8, "heavy": 0.1}
+    ids = [m["model_id"] for m in rank_models(reg, probs, lam=0.0)]
+    assert "cloudflare_clef-flash" not in ids
+    apply_inventory(reg, ["cloudflare_clef-flash"])
+    ids = [m["model_id"] for m in rank_models(reg, probs, lam=0.0)]
+    assert "cloudflare_clef-flash" in ids
