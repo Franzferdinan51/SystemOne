@@ -3,7 +3,7 @@
 Hand-labeled eval set (no LLM needed): 72 short texts across 3 binary
 tasks with known true labels. Splits 36 for fitting, 36 held-out for eval.
 
-Run:  python examples/demo_calibration.py
+Run:  python systemone/examples/demo_calibration.py
 """
 
 import os

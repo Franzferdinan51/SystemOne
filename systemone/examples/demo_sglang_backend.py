@@ -5,7 +5,7 @@ through a real SGLang server's /v1/decisions endpoint, and — when the
 local GLiClass engine is available — how its answers compare.
 
 Run:
-    SGLANG_BASE_URL=http://127.0.0.1:30000 python examples/demo_sglang_backend.py
+    SGLANG_BASE_URL=http://127.0.0.1:30000 python systemone/examples/demo_sglang_backend.py
 
 The SGLang part is skipped gracefully when no server is reachable; the
 local part is skipped when the GLiClass checkpoint can't load. Nothing

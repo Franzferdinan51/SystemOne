@@ -24,10 +24,10 @@ Session rules (mirroring Loki's `_is_new_root_session`):
   - the sticky cache is bounded (200 entries, oldest evicted).
 
 Run:
-    python examples/demo_autorouter.py "summarize this 20-page contract"
-    python examples/demo_autorouter.py --cost-bias quality "triage this ticket"
-    python examples/demo_autorouter.py --cost-bias economy "is this spam?"
-    python examples/demo_autorouter.py --force-model knowledgator/gliclass-base-v1.0 "task"
+    python systemone/examples/demo_autorouter.py "summarize this 20-page contract"
+    python systemone/examples/demo_autorouter.py --cost-bias quality "triage this ticket"
+    python systemone/examples/demo_autorouter.py --cost-bias economy "is this spam?"
+    python systemone/examples/demo_autorouter.py --force-model knowledgator/gliclass-base-v1.0 "task"
 """
 
 from __future__ import annotations

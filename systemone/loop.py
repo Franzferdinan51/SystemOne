@@ -25,7 +25,7 @@ should reimplement:
 
 Judges are backend-agnostic callables
 ``(state_text, questions, images, videos) -> answers`` returning
-api-shaped answers (see ``examples/demo_decision_loop.py`` for the stub
+api-shaped answers (see ``systemone/examples/demo_decision_loop.py`` for the stub
 and engine judges). Environments implement :class:`Env`.
 """
 

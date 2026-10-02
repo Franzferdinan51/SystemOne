@@ -8,8 +8,8 @@ Pipeline (no LLM needed for the demo):
 For a real teacher, swap in HFTeacher or LMStudioTeacher in distill.py.
 
 Run:
-  python examples/demo_distill.py            # label + write data only
-  python examples/demo_distill.py --train    # also fine-tune (~minutes on GPU)
+  python systemone/examples/demo_distill.py            # label + write data only
+  python systemone/examples/demo_distill.py --train    # also fine-tune (~minutes on GPU)
 """
 
 import argparse

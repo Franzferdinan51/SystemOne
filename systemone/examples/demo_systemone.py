@@ -3,7 +3,7 @@
 Also demonstrates the batching win: timing 1 question vs 6 questions —
 latency should barely move.
 
-Run:  python examples/demo_systemone.py
+Run:  python systemone/examples/demo_systemone.py
 """
 
 import os

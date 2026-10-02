@@ -10,9 +10,9 @@ performs the moves, and only inside the directory you pass explicitly.
 The script NEVER defaults to your real Desktop.
 
 Run:
-    python examples/desktop_clean_dryrun.py            # demo on a scratch dir
-    python examples/desktop_clean_dryrun.py --dir ~/Downloads --apply
-    SGLANG_BASE_URL=... python examples/desktop_clean_dryrun.py --engine sglang
+    python systemone/examples/desktop_clean_dryrun.py            # demo on a scratch dir
+    python systemone/examples/desktop_clean_dryrun.py --dir ~/Downloads --apply
+    SGLANG_BASE_URL=... python systemone/examples/desktop_clean_dryrun.py --engine sglang
 
 Engines: stub (offline heuristic), local (GLiClass), sglang (/v1/decisions).
 """

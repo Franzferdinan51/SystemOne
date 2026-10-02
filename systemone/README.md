@@ -12,8 +12,10 @@ the modules.
 |---|---|---|
 | `patterns.py` | stdlib + numpy | shared decision patterns: `SystemOneError`, validators, `StallGuard`, `LatencyStats`, `make_questions`, TypeSafe confidence, prompt rows |
 | `api.py` | `systemone[local]` | `SystemOne`: batched GLiClass inference over the patterns above |
-| `sglang_backend.py` | stdlib | `SGLangBackend` (`/v1/decisions` client) + `HybridBackend` (local-first, SGLang escalation) |
-| `shim.py` | stdlib + numpy (+ local for GLiClass mode) | HTTP server: `POST /v1/systemone`, `/v1/decisions`, `/v1/systemone/route`, `/v1/systemone/rank-plans`, `/v1/systemone/decide`; `GET /healthz`. Engine via `SYSTEMONE_ENGINE=auto\|local\|sglang` |
+| `sglang_backend.py` | stdlib | `SGLangBackend` (`/v1/decisions` client) + `HybridBackend` (local-first, SGLang escalation) + `decide_fn_for` (loop adapter) |
+| `jev_backend.py` | stdlib | `JevDecideBackend`: JEV decision models over `POST /v1/decide` + System 2 chat |
+| `loop.py` | stdlib | `DecisionLoop`: the one See > Decide > Act agent loop |
+| `shim.py` | stdlib + numpy (+ local for GLiClass mode) | HTTP server: `POST /v1/systemone`, `/v1/decisions`, `/v1/decide`, `/v1/systemone/route`, `/v1/systemone/rank-plans`, `/v1/systemone/decide`; `GET /healthz`, `/metrics`, `/openapi.json`, `/v1/decide/info`. Engine via `SYSTEMONE_ENGINE=auto\|local\|sglang\|jevk5\|onnx\|jev` |
 | `client.py` | stdlib | `SystemOneClient`: HTTP client for the shim |
 | `cli.py` | stdlib + numpy (+ local for `local`/`ask`) | `systemone` command: `route` / `decide` / `status` / `battery` via shim, `local` / `ask` / `serve` on-box |
 | `jeff1_sidecar.py` | decider-ai (+ torch via it) | decision sidecar serving the decider-4b backend on `:8079` |
@@ -30,7 +32,8 @@ the modules.
 | `jevk5_backend.py` | stdlib + numpy | `JevK5ServerBackend`: judge via `jevk5-serve`'s `/v1/systemone` (`JEVK5_BASE_URL`) |
 | `rerank_backend.py` | stdlib + numpy (+ onnxruntime for `OnnxCrossEncoder`) | `RerankBackend`: cross-encoder judge over any score fn; `OnnxCrossEncoder`: CPU ONNX cross-encoder |
 | `bench_2048.py` | varies | headless 2048 decision-loop benchmark (see docstring for limits) |
-| `tests/` | `pytest` (+ local for heavy tests) | suite: `pytest systemone/tests` runs green on a slim install; torch-only tests skip with a reason |
+| `tests/` + `test_route.py` | `pytest` (+ local for heavy tests) | suite: `pytest -m "not slow"` runs green on a slim install; torch-only tests skip with a reason |
+| `openapi.json` | — | machine-readable API spec, served at `GET /openapi.json` |
 | `examples/` | varies | runnable demos; SGLang/stub-capable ones import clean on slim |
 
 Install shapes: `pip install -e .` (slim: SGLang + shim client),

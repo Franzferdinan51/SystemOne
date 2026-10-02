@@ -11,9 +11,9 @@ provides the world (a mock treasure-hunt grid) and the judges, so it runs
 fully offline with a scripted judge. Point --engine at a real backend to
 watch the same loop drive real decisions:
 
-    python examples/demo_decision_loop.py --engine stub    # offline (default)
-    python examples/demo_decision_loop.py --engine local   # GLiClass
-    SGLANG_BASE_URL=... python examples/demo_decision_loop.py --engine sglang
+    python systemone/examples/demo_decision_loop.py --engine stub    # offline (default)
+    python systemone/examples/demo_decision_loop.py --engine local   # GLiClass
+    SGLANG_BASE_URL=... python systemone/examples/demo_decision_loop.py --engine sglang
 
 Nothing is at stake: the "executor" just moves a cursor on a grid.
 """

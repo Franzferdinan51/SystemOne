@@ -1,10 +1,11 @@
-# systemone — local, open System One decisions
+# systemone — open System One decisions
 
-A Jev-style typed-decision layer over **local** GLiClass checkpoints. TypeSafe's
-Jev is a closed API that returns typed decisions with calibrated probabilities
-(`choice`, `score`, `noul`). This package rebuilds that shape on your own
-hardware: tiny open models (Apache-2.0, 32M–439M params), one batched call,
-honest probabilities.
+A Jev-style typed-decision layer: `choice` / `score` / `noul` answers with
+calibrated probabilities, one batched call, honest uncertainty. TypeSafe's
+Jev is a closed API; this package rebuilds that shape on hardware you
+control — a slim numpy-only base with six swappable engines: local
+GLiClass (Apache-2.0, 32M–439M params), SGLang, JEV decision models,
+JevK5, a CPU-only ONNX judge, and the decider-4b sidecar.
 
 ## Philosophy: See > Decide > Act
 
@@ -12,7 +13,7 @@ Every agentic use of SystemOne runs one loop, implemented once in
 `systemone/loop.py` (`DecisionLoop`) and shared by the demos, the game
 benchmarks, and operator tools:
 
-    SEE     observe the world as text (+ optional images)
+    SEE     observe the world as text (+ images, video)
     DECIDE  one batched System 1 call: action + gates in a single pass
     ACT     execute, measure progress, compress the turn into memory
 
@@ -23,7 +24,36 @@ early-stop, and System 1 → System 2 escalation below 0.70 confidence
 (the [JEV-27B-VL](https://huggingface.co/autotrust/JEV-27B-VL) operating
 point). See [The agent loop](#the-agent-loop-see--decide--act).
 
-## What's new (September 2026)
+## What's new
+
+### October 2026
+
+- **SGLang baked in as a first-class engine** — the shim serves
+  `SYSTEMONE_ENGINE=auto|local|sglang|jevk5|onnx|jev` (probing only
+  explicitly configured servers, always fail-open), the base install is
+  slim (numpy-only; torch/GLiClass moved to `pip install
+  'systemone[local]'`), and `HybridBackend` escalates low-confidence
+  local calls to a bigger judge. See [SGLang
+  interop](#sglang-interop).
+- **JEV decision models + See > Decide > Act** — `SYSTEMONE_ENGINE=jev`
+  speaks the JEV-27B-VL `/v1/decide` wire format (System 1 over text and
+  images, System 2 chat, vLLM-raw client-side math), the shim serves
+  `POST /v1/decide` + `GET /v1/decide/info`, and `systemone/loop.py` is
+  the one See > Decide > Act agent loop every demo and benchmark shares.
+  See [JEV decision
+  models](#jev-decision-models-systemone_enginejev) and [The agent
+  loop](#the-agent-loop-see--decide--act).
+- **Clef schema compatibility** — `/v1/systemone` accepts Clef's
+  `images`/`videos`/`media_kwargs`, returns score `legend`s, the `noul`
+  P(true) alias, and `usage.output_tokens = 0`; all engines share one
+  `images=`/`videos=` protocol with honest drop reporting. See [Clef
+  compatibility](#clef-compatibility-cloudflareclef).
+- **Hardening + ops** — 2 MB body cap (413), 64-question / 32-plan batch
+  caps, JSON-only calibrators (the pickle fallback is gone), opt-in
+  `SYSTEMONE_API_TOKEN` auth on POST routes, Prometheus `/metrics`, and
+  `X-Request-ID` tracing on every response. See [Operations](#operations-auth-limits-metrics).
+
+### September 2026
 
 The consolidated end-of-program snapshot. SystemOne is no longer just the
 decision engine behind an API — the full scored decision surface is now baked
@@ -59,32 +89,6 @@ into shipping products:
   through the :8079 decision sidecar with a fail-open local GLiClass
   fallback. See [Typed decision
   endpoint](#typed-decision-endpoint-post-v1systemonedecide).
-- **SGLang baked in as a first-class engine** — the shim serves
-  `SYSTEMONE_ENGINE=auto|local|sglang` (SGLang when `SGLANG_BASE_URL` is
-  set and healthy, else local, always fail-open), the base install is
-  slim (numpy-only; torch/GLiClass moved to `pip install
-  'systemone[local]'`), and `HybridBackend` escalates low-confidence
-  local calls to a 27B-class SGLang judge. See [SGLang
-  interop](#sglang-interop).
-- **JEV decision models + See > Decide > Act** — `SYSTEMONE_ENGINE=jev`
-  speaks the JEV-27B-VL `/v1/decide` wire format (System 1 over text and
-  images, System 2 chat, vLLM-raw client-side math), the shim serves
-  `POST /v1/decide` + `GET /v1/decide/info`, and `systemone/loop.py` is
-  the one See > Decide > Act agent loop every demo and benchmark shares.
-  Overlapping loop harnesses and duplicate route tests were consolidated
-  onto it. See [JEV decision
-  models](#jev-decision-models-systemone_enginejev) and [The agent
-  loop](#the-agent-loop-see--decide--act).
-- **Clef schema compatibility** — `/v1/systemone` accepts Clef's
-  `images`/`videos`/`media_kwargs`, returns score `legend`s, the `noul`
-  P(true) alias, and `usage.output_tokens = 0`; all engines share one
-  `images=`/`videos=` protocol with honest drop reporting. See [Clef
-  compatibility](#clef-compatibility-cloudflareclef).
-- **Hardening + ops** — 2 MB body cap (413), 64-question / 32-plan batch
-  caps, JSON-only calibrators (the pickle fallback is gone), opt-in
-  `SYSTEMONE_API_TOKEN` auth on POST routes, Prometheus `/metrics`, and
-  `X-Request-ID` tracing on every response. See [Operations](#operations-auth-limits-metrics).
-
 ## Map to Jev's primitives
 
 | Jev primitive | systemone | Returns |
@@ -98,6 +102,10 @@ Jev trains calibration in with RLCD. We do the practical equivalent:
 labeled data — see `calibration.py`.
 
 ## Quickstart
+
+In-process inference needs the local engine (`pip install
+'systemone[local]'` for torch/GLiClass). To judge without any model
+install, run the shim instead and talk HTTP (see below).
 
 ```python
 from systemone import SystemOne, make_questions
@@ -119,7 +127,8 @@ out["page_cto"]# {"probability": 0.72, "answer": True, "confidence": 0.72}
 ```
 
 All questions in one call are evaluated in **one batched forward pass** —
-adding questions barely changes latency (see `examples/demo_systemone.py`).
+adding questions barely changes latency (see
+`systemone/examples/demo_systemone.py`).
 
 ### With calibration
 
@@ -156,7 +165,7 @@ never loads a model in-process. The shim URL resolves in this order:
 pip install -e .                     # slim: SGLang backend + shim client (numpy-only)
 pip install -e '.[local]'            # + torch/GLiClass local engine
 pip install -e '.[local,mcp,dev]'    # everything incl. MCP tools + pytest
-systemone --help          # route / decide / status / battery / jevbench (+ legacy local/ask/serve)
+systemone --help          # route / decide / status / jevbench / battery / local / ask / serve
 systemone-acp --help      # ACP agent (stdio)
 ```
 
@@ -183,7 +192,7 @@ confidence : 0.8537  (margin 0.7555)
 model      : ornith-1.5-9b
 effort     : medium
 uncertain  : False
-rationale  : Task 'Write a SQL query to find duplicate customer emails in the users table' -> 'balanced' (ornith-1.5-9b): ...
+rationale  : Task '...' — 'balanced' (...) is the cheapest tier rated sufficient ...
 
 $ systemone decide --type noul --state "The deploy pipeline is green and all checks passed" \
     --instructions "Is it safe to deploy to production right now?"
@@ -211,8 +220,10 @@ shim       : http://127.0.0.1:8765
 
 `route`, `decide`, and `status` also take `--json` for machine-readable output, plus global
 `--shim-url` and `--timeout`. `systemone battery` forwards its arguments
-verbatim to the calibration battery (`systemone/battery/run.py`), and
-`systemone local` / `ask` / `serve` keep the legacy in-process engine.
+verbatim to the calibration battery (`systemone/battery/run.py`), `systemone
+jevbench` scores a JevBench split with any engine, `systemone serve` runs the
+shim (any `--engine`, optional `--with-jeff1` sidecar), and `systemone local` /
+`ask` drive the in-process engine directly (health check / one-shot judgments).
 
 ### MCP (stdio)
 
@@ -260,34 +271,67 @@ the probe.
 ## Pieces
 
 - **`api.py`** — `SystemOne`: loads one GLiClass checkpoint (edge → small → base,
-  smallest-first), `systemone(state, questions)` batched inference.
-  `SystemOneError` is the single sanitized exception type (mirrors Loki's
-  `TypeSafeRequestError`: safe to surface in logs and tool output, never
-  echoes env secrets or paths). States over `MAX_STATE_CHARS` (6000, same
-  bound Loki uses) are capped with `state_capped: true` in `_meta`.
-- **`cli.py`** — local equivalent of Loki's `/jev status`: `python -m
-  systemone.cli status` (config health check, `--load` to verify a real
-  model load + latency probe) and `python -m systemone.cli ask --state ...
-  --questions q.json` (one-shot Jev-style judgments, same question shape
-  as the MCP tool).
+  smallest-first; needs `systemone[local]`), `systemone(state, questions)`
+  batched inference. `SystemOneError` is the single sanitized exception type
+  (mirrors Loki's `TypeSafeRequestError`: safe to surface in logs and tool
+  output, never echoes env secrets or paths). States over `MAX_STATE_CHARS`
+  (6000, same bound Loki uses) are capped with `state_capped: true` in `_meta`.
+- **`patterns.py`** — the light shared core (stdlib + numpy): validators,
+  TypeSafe confidence, prompt rows, `StallGuard`, `LatencyStats`,
+  `make_questions`, request limits, and the API-token gate. Every backend
+  and both servers build on it.
+- **`cli.py`** — the `systemone` agent CLI: `route` / `decide` / `status` /
+  `jevbench` / `battery` against the live shim, `local` (config health
+  check, `--load` to verify a real model load + latency probe) and `ask`
+  (one-shot Jev-style judgments) on the in-process engine, `serve` to run
+  the shim.
+- **`client.py`** — `SystemOneClient`: stdlib HTTP client for the shim
+  (`route`, `decide`, `decisions`, `status`, `rank_plans`); transport
+  failures surface as `ShimError`.
 - **`calibration.py`** — `TemperatureCalibrator`, `PlattCalibrator`,
-  `IsotonicCalibrator`, `CalibratedScorer`, `expected_calibration_error()`.
+  `IsotonicCalibrator`, `CalibratedScorer`, per-type temperature maps,
+  `expected_calibration_error()`. Loaders are JSON-only.
+- **`metrics.py`** — calibration metrics (`ece` / `brier` / `nll` / `aurc` /
+  selective accuracy + summarize tables).
 - **`mcp_server.py`** — MCP tools over stdio for agent stacks:
   `typesafe_ask` (Jev-compatible `state` + `questions` interface with
   `{"id", "type", "instructions", "criteria"}` questions and
   `{"answers": {id: ...}}` responses — no API key needed),
-  plus domain tools `verify_claims`, `screen_content`, `rank_candidates`.
+  plus domain tools `verify_claims`, `screen_content`, `rank_candidates`,
+  plus live-shim tools (`systemone_route`, `systemone_decide`,
+  `systemone_status`, `systemone_rank_plans`).
   Run: `python -m systemone.mcp_server` (env: `SYSTEMONE_MODEL`, `SYSTEMONE_DEVICE`,
   optional `SYSTEMONE_CALIBRATOR`). Only one model is loaded at a time; a per-call
   `model` on `typesafe_ask` swaps the loaded checkpoint.
+- **`acp_server.py`** — ACP v1 agent over stdio (`systemone-acp`): `/route`
+  and `/decide` through the live shim.
 - **`shim.py`** — local drop-in for TypeSafe's hosted `/v1/systemone`
   endpoint. Serves the exact request/response dialect Ryan's `jev-ultrafast`
   and `mobile-jev` agents already speak (TypeSafe `questions` dict with
-  `criteria` + `instructions`, rich dict `state`) from a local GLiClass
-  engine — no API key, no cloud, no per-call cost. Run
-  `python -m systemone.shim [--port 8765]`, then point the agent's
-  `post_json` URL at `http://127.0.0.1:8765/v1/systemone`. The only change
-  on their side is the endpoint string.
+  `criteria` + `instructions`, rich dict `state`) from any of six engines
+  (`SYSTEMONE_ENGINE=auto|local|sglang|jevk5|onnx|jev`) — no API key, no
+  cloud, no per-call cost. Run `python -m systemone.shim [--port 8765]`,
+  then point the agent's `post_json` URL at
+  `http://127.0.0.1:8765/v1/systemone`. The only change on their side is
+  the endpoint string. Also serves `/v1/decisions` (SGLang),
+  `/v1/decide` (JEV), route/rank-plans/decide, `/metrics`, and
+  `/openapi.json` — see [HTTP endpoints](#http-endpoints).
+- **`sglang_backend.py`** — `SGLangBackend` (SGLang `/v1/decisions` judge,
+  drop-in for `SystemOne`), `HybridBackend` (local-first, whole-call
+  SGLang escalation), and `decide_fn_for` (any engine → loop judge).
+- **`jev_backend.py`** — `JevDecideBackend`: JEV decision models over
+  `POST /v1/decide` (hosted, vLLM-raw client-side math, System 2 chat).
+- **`jevk5_backend.py`** — `JevK5ServerBackend`: judge via a `jevk5-serve`
+  server's `/v1/systemone` (forwards Clef media).
+- **`rerank_backend.py`** — `RerankBackend`: cross-encoder judge over any
+  score function; `OnnxCrossEncoder`: CPU-only ONNX cross-encoder.
+- **`loop.py`** — `DecisionLoop`: the one See > Decide > Act agent loop.
+- **`scoring.py`** — route scoring, calibration application, model/tool
+  ranking, LM Studio inventory (thread-safe refresher).
+- **`jevbench.py`** — JevBench-split scoring adapter (`score_item` /
+  `run_file`); CLI: `systemone jevbench --items`.
+- **`bench_2048.py`** — headless 2048 decision benchmark over the loop
+  (canned boards, decision-latency only — see its docstring).
 - **`jeff1.py`** — shim-side client for the decision sidecar
   (stdlib-only HTTP; the module name is historical): `jeff1_enabled()`,
   `rank_plans_via_jeff1()`, `second_opinion()`, `blend_rankings()`. On by
@@ -304,17 +348,18 @@ the probe.
   model load on CUDA. See "Deployment topologies" below.
 - **`distill.py`** — label with a teacher (`SyntheticTeacher`, `HFTeacher`,
   `LMStudioTeacher` — one local model at a time), write training JSON,
-  fine-tune the edge student via the repo's `train.py`.
-- **`tune.py`** — `make_training_json()` + `tune()` wrappers around `train.py`
-  for domain fine-tuning on your own decision data.
-- **Decision patterns (`api.py`)** — ported from Ryan's `jev-ultrafast` and
+  and build the fine-tune command for a `train.py` at the repo root
+  (bring your own trainer — none is shipped).
+- **`tune.py`** — `make_training_json()` + `tune()` wrappers around that
+  same `train.py` for domain fine-tuning on your own decision data.
+- **Decision patterns (`patterns.py`)** — ported from Ryan's `jev-ultrafast` and
   `mobile-jev` agent repos (both are TypeSafe-hosted apps; what transfers is
   their decision-engineering discipline, not their transport):
   - `validate_choice` / `validate_distribution` — response-contract checks on
     every choice/score/noul output: keys match the options, values are finite
     probabilities summing to ~1, the winner holds the max. Runs inside
     `systemone()` on every answer.
-  - `SystemOne.speculative_decide` — decide an operation AND its argument in
+  - `speculative_decide` — decide an operation AND its argument in
     one batched pass; only the target head matching the chosen operation is
     validated/used (*unused target heads cannot cause an action*).
   - `with_abstain` — append an explicit `"none"` option so the model is never
@@ -325,29 +370,31 @@ the probe.
 
 ## Examples
 
-- `examples/demo_systemone.py` — all three primitives + batching timings
-- `examples/demo_calibration.py` — ECE before/after on a hand-labeled set
-- `examples/demo_autorouter.py` — Loki-Autorouter-style session-sticky model
+All under `systemone/examples/`:
+
+- `demo_systemone.py` — all three primitives + batching timings
+- `demo_calibration.py` — ECE before/after on a hand-labeled set
+- `demo_autorouter.py` — Loki-Autorouter-style session-sticky model
   routing: gliclass-edge (as the tiny decision model) routes the session's
   first task to the cheapest sufficiently-capable local checkpoint
   (`--cost-bias economy|balanced|quality`, confidence-gated, fail-open)
-- `examples/demo_distill.py` — distill a content-safety classifier into gliclass-edge
-- `examples/demo_speculative.py` — speculative multi-head: decide the operation
+- `demo_distill.py` — distill a content-safety classifier into gliclass-edge
+- `demo_speculative.py` — speculative multi-head: decide the operation
   AND its target argument in one batched pass (from `jev-ultrafast`)
-- `examples/sample_decision_data.json` — routing + guardrail records in tune() format
-- `examples/demo_sglang_backend.py` — same questions judged by the local
+- `sample_decision_data.json` — routing + guardrail records in tune() format
+- `demo_sglang_backend.py` — same questions judged by the local
   engine and by SGLang's `/v1/decisions` side by side
-- `examples/demo_decision_loop.py` — the fast agent loop: one batched
+- `demo_decision_loop.py` — the fast agent loop: one batched
   decisions call per tick (action + stuck? + progress), StallGuard, turn
   compression, uncertainty-gated actions
-- `examples/desktop_clean_dryrun.py` — desktop-cleaning planner: one choice
+- `desktop_clean_dryrun.py` — desktop-cleaning planner: one choice
   question per file in a single batched call, dry-run by default
 
 ## JevBench scoring
 
 `systemone jevbench --items public.jsonl --out preds.jsonl` scores a
 [JevBench](https://github.com/fstandhartinger/jevbench)-format split with
-any engine (`--engine auto|local|sglang`, default auto): accuracy overall
+any engine (`--engine auto|local|sglang|jevk5|onnx|jev`, default auto): accuracy overall
 and per family, mean latency, and per-item native probability distributions
 (Brier/ECE eligible — never verbalized). Items with a
 `provenance.exclude_reason` are skipped, and one bad item never kills a run.
@@ -443,8 +490,9 @@ template.
 ## The agent loop: See > Decide > Act
 
 `systemone/loop.py` is the one loop every agentic use shares. Implement
-an `Env` (`observe()` → text/images, `act(action)` → progress), pick a
-judge (any engine's `systemone`, or a scripted stub), and run:
+an `Env` (`observe()` → text/images/videos, `act(action)` → progress),
+pick a judge (any engine adapted with `decide_fn_for`, or a scripted
+stub), and run:
 
 ```python
 from systemone import DecisionLoop, make_questions
@@ -455,19 +503,19 @@ result = loop.run(MyEnv(), make_questions(choices={"action": [...]}))
 print(result.outcome, result.n_ticks)  # done | stalled | budget
 ```
 
-`examples/demo_decision_loop.py` (treasure-hunt grid) and
-`bench_2048.py` (headless 2048 decision benchmark) are both thin `Env` +
-judge wrappers over `DecisionLoop` — new worlds follow the same shape
-instead of hand-rolling loop, gating, memory, and stall logic.
+`systemone/examples/demo_decision_loop.py` (treasure-hunt grid) and
+`systemone/bench_2048.py` (headless 2048 decision benchmark) are both thin
+`Env` + judge wrappers over `DecisionLoop` — new worlds follow the same
+shape instead of hand-rolling loop, gating, memory, and stall logic.
 
 ## SGLang interop
 
 SystemOne speaks both sides of SGLang's decision API, and SGLang is now a
 baked-in engine choice — not a sidecar integration.
 
-**Pick the judge: `SYSTEMONE_ENGINE=auto|local|sglang`.** The shim
-(`python3 -m systemone.shim`, `systemone serve`) serves whichever engine
-you select (`--engine` flag overrides the env var):
+**Pick the judge: `SYSTEMONE_ENGINE=auto|local|sglang|jevk5|onnx|jev`.**
+The shim (`python3 -m systemone.shim`, `systemone serve`) serves whichever
+engine you select (`--engine` flag overrides the env var):
 
 | setting | behavior |
 |---|---|
@@ -476,6 +524,7 @@ you select (`--engine` flag overrides the env var):
 | `sglang` | Always SGLang. Unreachable → fails open to local when available, else a clear error. |
 | `jevk5` | Always a JevK5 server (`jevk5-serve`'s `/v1/systemone`). Same fail-open behavior as `sglang`. |
 | `onnx` | Always the local ONNX cross-encoder judge (default Xenova/bge-reranker-base int8; `RERANK_MODEL_ID` / `RERANK_ONNX_FILE` / `RERANK_REVISION` override). Needs `onnxruntime` + `tokenizers` + `huggingface_hub`. Never auto-selected (it downloads weights). |
+| `jev` | Always a JEV decision model (`/v1/decide`). Same fail-open behavior as `sglang`. Only this engine serves images natively. |
 
 `GET /healthz` reports the live choice (`{"ok": true, "model": ...,
 "backend": "local"|"sglang"|"hybrid"|"jev"|"jevk5"|"rerank"|"custom"}`), and
@@ -520,8 +569,8 @@ so any client written against SGLang works unchanged against this box:
 Choice is limited to 2–26 options and score to 2–10 levels (422 beyond
 that), mirroring SGLang — past 26 options SGLang switches to two-letter
 labels with order-dependent priors, so we refuse rather than silently
-miscalibrate. `label_mass` comes back `null` here; that uncertainty
-signal only exists on a real SGLang server.
+miscalibrate. At most 64 questions per request. `label_mass` comes back
+`null` here; that uncertainty signal only exists on a real SGLang server.
 
 **Use a real SGLang server as the judge.** `SGLangBackend` is a drop-in
 for `SystemOne` with identical question shapes — point it at a served
@@ -570,6 +619,26 @@ engine — otherwise you're measuring the cache, not the model.
 - **Tracing** — every response carries `X-Request-ID` (client-supplied
   values pass through, else a fresh 16-hex ID), and the JSONL decision
   log records it per request.
+
+## HTTP endpoints
+
+The shim (`:8765`) serves, all documented in `GET /openapi.json`:
+
+| method + path | purpose |
+|---|---|
+| `GET /`, `GET /healthz` | liveness + active engine/model/backend |
+| `GET /metrics` | Prometheus request counters and latency sums |
+| `GET /openapi.json` | machine-readable API spec |
+| `POST /v1/systemone` | TypeSafe/Clef dialect: batched typed questions, media, legends |
+| `POST /v1/decisions` | SGLang dialect: batched choice/score/yes_no with `label_mass` |
+| `POST /v1/decide` | JEV System 1 dialect: `kind`/`state`/`question`/`options` |
+| `GET /v1/decide/info` | option limit, kinds, image support for `/v1/decide` |
+| `POST /v1/systemone/route` | cheapest sufficient tier + scored decision surface |
+| `POST /v1/systemone/rank-plans` | rank candidate plans for a task |
+| `POST /v1/systemone/decide` | single Jev-shaped decision via the sidecar (fail-open fallback) |
+
+The sidecar (`:8079`) serves `POST /v1/jeff1/decide`,
+`/v1/jeff1/rank-plans`, `/v1/jeff1/second-opinion`, and `GET /healthz`.
 
 ## Design notes
 
@@ -692,7 +761,7 @@ working unchanged:
 ```json
 {"route": {
   "tier": "balanced", "model_id": "ornith-1.5-9b",
-  "confidence": 0.74, "calibrated": true,
+  "confidence": 0.51, "calibrated": true,
   "probabilities": {"economy": 0.18, "balanced": 0.54, "heavy": 0.28},
   "calibrated_probabilities": {"economy": 0.22, "balanced": 0.51, "heavy": 0.27},
   "margin": 0.24, "uncertain": false,
@@ -709,8 +778,8 @@ working unchanged:
   `calibrated_probabilities` is the temperature-scaled tier distribution,
   `margin` is P(top1) − P(top2), and `uncertain` is true when the margin is
   under `SYSTEMONE_MARGIN_FLOOR` (default 0.15). `confidence` is the
-  calibrated P(top1) — the old heuristic is gone, so the 0.8 pruning
-  threshold consumers use now means what it says. Without a calibration
+  calibrated probability of the routed tier — so tier, confidence, and
+  probabilities always agree with each other. Without a calibration
   file the shim serves raw scores and marks `"calibrated": false`.
 - **Model ranking**: each registry tier carries a `models[]` list
   (`quality` per tier mix, `cost`, `latency_ms_p50`, `vram_gb`,
@@ -895,8 +964,9 @@ Request:
 
 - **`choice`** — `criteria` is `{label: description}`. Returns the winning
   `label` + per-label `probabilities`.
-- **`noul`** — no criteria needed (optional `{yes, no}` descriptions).
-  Returns a yes/no `label` + `probabilities`.
+- **`noul`** — no criteria needed (optional `{yes, no}` or
+  `{true, false}` descriptions). Returns a yes/no `label` +
+  `probabilities`.
 - **`score`** — `criteria` is ordered level descriptions keyed `"0"`..`"n-1"`
   (a list works too). Returns the winning `level` + `distribution`.
 
@@ -1042,23 +1112,27 @@ Principles ported from Loki's Jev integration:
   the session. Thresholds are clamped to [0,1]; unknown model names fall
   back to current.
 - **Explicit user choices take precedence** over routed or cached ones.
-- **Bound everything:** state (6000 chars), candidate catalog (12 default,
+- **Bound everything:** state (6000 chars), request bodies (2 MB),
+  question batches (64), plan lists (32), candidate catalog (12 default,
   24 max), sticky cache (200 entries). Unbounded inputs are how quiet
   degradation starts.
 
 ## Tests
 
 ```bash
-pytest systemone/tests -m "not slow"   # fast, no model needed
-pytest systemone/tests                  # includes one end-to-end model test
+pytest -m "not slow"   # fast, no model needed (torch-only tests skip too)
+pytest                  # everything, incl. one end-to-end model test (slow)
 ```
+
+The suite runs green on a slim install: heavy tests skip with a reason
+instead of failing.
 
 ## Install (Windows, RTX GPU)
 
 ```bash
 python -m pip install torch --index-url https://download.pytorch.org/whl/cu128
-python -m pip install transformers scikit-learn numpy scipy tqdm "mcp<2" packaging
-pip install -e .   # installs the local gliclass fork (from repo root)
+pip install -e '.[local]'            # torch/GLiClass engine (from repo root)
+pip install -e '.[local,mcp,dev]'    # + MCP tools + pytest
 ```
 
 Then `python -m systemone.mcp_server` or import `systemone` anywhere.
@@ -1085,3 +1159,11 @@ Set `PYTHONIOENCODING=utf-8` on Windows consoles.
   into `calibration.py`, `api.py`, `metrics.py`, and `battery/fit_types.py`.
 - **Loki** — design principles ported from their Jev integration
   (decider-never-crosses-trust-boundaries, fail-open at every stage).
+- **[AutoTrust AI](https://huggingface.co/autotrust/JEV-27B-VL)** —
+  JEV-27B-VL (Apache 2.0): the `/v1/decide` wire format, System 1 →
+  System 2 escalation pattern, and demo client this box interoperates
+  with.
+- **[Cloudflare](https://huggingface.co/Cloudflare/clef)** — Clef
+  (Apache 2.0): the media fields, score legends, and zero-token usage
+  pulled into `/v1/systemone`.
+- **SGLang** — the `/v1/decisions` dialect served and consumed here.
