@@ -152,6 +152,7 @@ except ImportError:  # slim install (no torch/gliclass): SGLang-engine or
 
 from .jev_backend import JevDecideBackend
 from .jevk5_backend import JevK5ServerBackend
+from .kev_backend import KevBackend
 from .rerank_backend import OnnxCrossEncoder, RerankBackend
 from .sglang_backend import HybridBackend, SGLangBackend
 from .scoring import (
@@ -2293,7 +2294,7 @@ def _win32_detach(argv: list[str]) -> bool:
 # -- baked-in engine selection (local GLiClass vs SGLang) --------------------
 
 ENGINE_ENV = "SYSTEMONE_ENGINE"
-ENGINE_CHOICES = ("auto", "local", "sglang", "jevk5", "onnx", "jev")
+ENGINE_CHOICES = ("auto", "local", "sglang", "jevk5", "onnx", "jev", "kev")
 
 
 def engine_backend_name(engine: Any) -> str:
@@ -2311,6 +2312,8 @@ def engine_backend_name(engine: Any) -> str:
         return "sglang"
     if isinstance(engine, JevK5ServerBackend):
         return "jevk5"
+    if isinstance(engine, KevBackend):
+        return "kev"
     if isinstance(engine, RerankBackend):
         return "rerank"
     if SystemOne is not None and isinstance(engine, SystemOne):
@@ -2324,12 +2327,14 @@ def create_engine(name: str | None = None) -> Any:
     """Build the decision engine the shim serves.
 
     Args:
-        name: "auto" (default) | "local" | "sglang" | "jevk5" | "onnx" | "jev".
-            Unset -> the SYSTEMONE_ENGINE env var, defaulting to "auto".
+        name: "auto" (default) | "local" | "sglang" | "jevk5" | "onnx" |
+            "jev" | "kev". Unset -> the SYSTEMONE_ENGINE env var,
+            defaulting to "auto".
 
     - auto: JEV when JEV_URL is set and healthy, else SGLang when
       SGLANG_BASE_URL is set and healthy, else JevK5 when JEVK5_BASE_URL
-      is set and healthy, else the local GLiClass engine. Probes only run
+      is set and healthy, else Kev when KEV_BASE_URL is set and healthy,
+      else the local GLiClass engine. Probes only run
       for explicitly configured servers, so a default box never stalls at
       startup. The JEV decision model wins when configured — it is the
       flagship judge (calibrated System 1 + System 2 in one engine).
@@ -2346,15 +2351,19 @@ def create_engine(name: str | None = None) -> Any:
     - jev: JevDecideBackend (a JEV decision model's /v1/decide, e.g.
       serve_decide.py or a hosted Jev API). Same fail-open behavior as
       sglang. Only this engine serves images natively.
+    - kev: KevBackend (kev.serve's /v1/systemone: Kev-0.8B/4B/9B/27B).
+      Same fail-open behavior as sglang. Text-only, but the long-doc
+      specialist (up to 65,536 tokens on Kev-27B).
 
     Raises:
         ValueError: unknown engine name.
-        SGLangError / JevK5Error: remote requested but unreachable and no
-            local fallback.
+        SGLangError / JevK5Error / KevError: remote requested but
+            unreachable and no local fallback.
         ImportError: local requested but the heavy deps are not installed.
     """
     from .jev_backend import JevError
     from .jevk5_backend import JevK5Error
+    from .kev_backend import KevError
     from .sglang_backend import SGLangError
 
     sel = (name or os.environ.get(ENGINE_ENV) or "auto").strip().lower()
@@ -2370,9 +2379,9 @@ def create_engine(name: str | None = None) -> Any:
                 "the local GLiClass engine needs torch + transformers + "
                 "gliclass, which are not installed. Either install them "
                 "(pip install 'systemone[local]') or serve a remote engine "
-                "instead (SYSTEMONE_ENGINE=sglang|jevk5|jev with its base "
-                "URL set) or the ONNX judge (SYSTEMONE_ENGINE=onnx with "
-                "onnxruntime installed)."
+                "instead (SYSTEMONE_ENGINE=sglang|jevk5|jev|kev with its "
+                "base URL set) or the ONNX judge (SYSTEMONE_ENGINE=onnx "
+                "with onnxruntime installed)."
             )
         return SystemOne(model_name=os.environ.get("SYSTEMONE_MODEL"))
 
@@ -2432,6 +2441,10 @@ def create_engine(name: str | None = None) -> Any:
         found = _remote("jevk5", JevK5ServerBackend, JevK5Error, "JEVK5_BASE_URL")
         if found is not None:
             return found
+    if sel == "kev" or (os.environ.get("KEV_BASE_URL") or "").strip():
+        found = _remote("kev", KevBackend, KevError, "KEV_BASE_URL")
+        if found is not None:
+            return found
     return _local()
 
 
@@ -2455,8 +2468,9 @@ def serve(
     Args:
         engine: explicit engine instance (wins over engine_name; tests use
             this to inject stubs).
-        engine_name: "auto" | "local" | "sglang" | "jevk5" | "onnx" | "jev"
-            (see create_engine); unset -> $SYSTEMONE_ENGINE, default "auto".
+        engine_name: "auto" | "local" | "sglang" | "jevk5" | "onnx" |
+            "jev" | "kev" (see create_engine); unset -> $SYSTEMONE_ENGINE,
+            default "auto".
     """
     engine = engine or create_engine(engine_name)
     server = ThreadingHTTPServer(("127.0.0.1", port), ShimHandler)

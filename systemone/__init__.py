@@ -80,6 +80,7 @@ from .patterns import (
 )
 from .jev_backend import JevDecideBackend, JevError
 from .jevk5_backend import JevK5Error, JevK5ServerBackend
+from .kev_backend import KevBackend, KevError
 from .loop import ActResult, DecisionLoop, LoopResult, Observation, Step, run_loop
 from .rerank_backend import OnnxCrossEncoder, RerankBackend
 from .sglang_backend import (
@@ -98,6 +99,8 @@ __all__ = [
     "decide_fn_for",
     "JevK5ServerBackend",
     "JevK5Error",
+    "KevBackend",
+    "KevError",
     "JevDecideBackend",
     "JevError",
     "DecisionLoop",

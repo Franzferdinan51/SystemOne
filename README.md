@@ -3,9 +3,9 @@
 A Jev-style typed-decision layer: `choice` / `score` / `noul` answers with
 calibrated probabilities, one batched call, honest uncertainty. TypeSafe's
 Jev is a closed API; this package rebuilds that shape on hardware you
-control — a slim numpy-only base with six swappable engines: local
+control — a slim numpy-only base with seven swappable engines: local
 GLiClass (Apache-2.0, 32M–439M params), SGLang, JEV decision models,
-JevK5, a CPU-only ONNX judge, and the decider-4b sidecar.
+JevK5, Kev (0.8B–27B), a CPU-only ONNX judge, and the decider-4b sidecar.
 
 ## Philosophy: See > Decide > Act
 
@@ -308,7 +308,7 @@ the probe.
 - **`shim.py`** — local drop-in for TypeSafe's hosted `/v1/systemone`
   endpoint. Serves the exact request/response dialect Ryan's `jev-ultrafast`
   and `mobile-jev` agents already speak (TypeSafe `questions` dict with
-  `criteria` + `instructions`, rich dict `state`) from any of six engines
+  `criteria` + `instructions`, rich dict `state`) from any of seven engines
   (`SYSTEMONE_ENGINE=auto|local|sglang|jevk5|onnx|jev`) — no API key, no
   cloud, no per-call cost. Run `python -m systemone.shim [--port 8765]`,
   then point the agent's `post_json` URL at
@@ -323,6 +323,8 @@ the probe.
   `POST /v1/decide` (hosted, vLLM-raw client-side math, System 2 chat).
 - **`jevk5_backend.py`** — `JevK5ServerBackend`: judge via a `jevk5-serve`
   server's `/v1/systemone` (forwards Clef media).
+- **`kev_backend.py`** — `KevBackend`: judge via a `kev.serve`
+  server's `/v1/systemone` (Kev-0.8B/4B/9B/27B, long-doc specialist).
 - **`rerank_backend.py`** — `RerankBackend`: cross-encoder judge over any
   score function; `OnnxCrossEncoder`: CPU-only ONNX cross-encoder.
 - **`loop.py`** — `DecisionLoop`: the one See > Decide > Act agent loop.
@@ -415,6 +417,7 @@ JevBench board:
 | `jevk5` | JevK5 open weights (Apache-2.0) via `jevk5-serve` | JevBench #5 (62.04), 1st fully open |
 | `onnx` | ONNX cross-encoder rerank judge, CPU-only, no torch | easy 81.2% @ ~22 ms, hard 35.1%, original 36.1% (BGE-base int8, Apple Silicon CPU) |
 | `jev` | JEV decision model (System 1 + System 2, multimodal) via `/v1/decide` | JEV-27B-VL: Plan-RewardBench 73.2 (top), VL-RewardBench 78.3, ECE 0.0009 (model card) |
+| `kev` | Kev family (0.8B laptop → 27B datacentre) via `kev.serve` | Kev-27B within 1pt of Jev on new sources; 65k-token docs; shipped T per checkpoint |
 
 The ONNX judge is the honest CPU fallback: strong on easy-tier routing-style
 items, weak on hard items next to 4B+ purpose-built judges — pick the
@@ -454,6 +457,28 @@ curl localhost:8765/v1/decide -H 'Content-Type: application/json' -d '{
   "question": "Which team should handle this?",
   "options": ["billing", "shipping", "tech support"]}'
 ```
+
+## Kev judges (`SYSTEMONE_ENGINE=kev`)
+
+[Kev](https://github.com/Franzferdinan51/kev) is a family of small
+open decision models (Apache-2.0, Kev 1.0) in four sizes — 0.8B for a
+laptop, 4B for a desktop GPU, 9B for a workstation, 27B for a datacentre
+GPU — each with a fitted temperature and validation out to 8k tokens
+(65k on the 27B). `KevBackend` judges through `kev.serve`:
+
+    python -m kev.serve --run jaredpalmer/kev-4b --port 8008
+    SYSTEMONE_ENGINE=kev KEV_BASE_URL=http://127.0.0.1:8008 systemone serve
+
+`KEV_MODEL` (default `kev-latest`), `KEV_API_KEY` (Bearer auth when the
+server requires it), `KEV_TIMEOUT` configure the client. Kev is
+text-only, so media is reported dropped — but states are never
+truncated client-side: long documents are Kev's headline feature, and
+an over-limit state surfaces as a loud `KevError` (server 422) instead
+of a silently cut judgment. The bundled `systemone/kev_registry.json`
+tier pack routes judge tasks across the four sizes — pass it as the
+per-request `registry` to `POST /v1/systemone/route`. Kev also
+contributed the shared reference `score_confidence` formula and the
+opt-in `SYSTEMONE_DATE_FACTS=1` date preprocessing.
 
 ## Clef compatibility (`Cloudflare/clef`)
 
@@ -519,10 +544,11 @@ engine you select (`--engine` flag overrides the env var):
 
 | setting | behavior |
 |---|---|
-| `auto` (default) | JEV when `JEV_URL` is set and healthy, else SGLang when `SGLANG_BASE_URL` is set and healthy, else JevK5 when `JEVK5_BASE_URL` is set and healthy, else the local GLiClass engine. Probes only run for explicitly configured servers, so a default box never stalls at startup. |
+| `auto` (default) | JEV when `JEV_URL` is set and healthy, else SGLang when `SGLANG_BASE_URL` is set and healthy, else JevK5 when `JEVK5_BASE_URL` is set and healthy, else Kev when `KEV_BASE_URL` is set and healthy, else the local GLiClass engine. Probes only run for explicitly configured servers, so a default box never stalls at startup. |
 | `local` | Always the GLiClass engine. Needs `pip install 'systemone[local]'`. |
 | `sglang` | Always SGLang. Unreachable → fails open to local when available, else a clear error. |
 | `jevk5` | Always a JevK5 server (`jevk5-serve`'s `/v1/systemone`). Same fail-open behavior as `sglang`. |
+| `kev` | Always a Kev server (`kev.serve`'s `/v1/systemone`). Same fail-open behavior as `sglang`. Text-only; the long-doc specialist. |
 | `onnx` | Always the local ONNX cross-encoder judge (default Xenova/bge-reranker-base int8; `RERANK_MODEL_ID` / `RERANK_ONNX_FILE` / `RERANK_REVISION` override). Needs `onnxruntime` + `tokenizers` + `huggingface_hub`. Never auto-selected (it downloads weights). |
 | `jev` | Always a JEV decision model (`/v1/decide`). Same fail-open behavior as `sglang`. Only this engine serves images natively. |
 

@@ -1,8 +1,8 @@
-"""Tests for the beyond-GLiClass backends: rerank, ONNX, JevK5-server.
+"""Tests for the beyond-GLiClass backends: rerank, ONNX, JevK5-server, Kev.
 
-RerankBackend and JevK5ServerBackend are pure logic + mocked HTTP (always
-run). The OnnxCrossEncoder integration runs only when onnxruntime and a
-cached model are present — tests never download weights.
+RerankBackend, JevK5ServerBackend, and KevBackend are pure logic + mocked
+HTTP (always run). The OnnxCrossEncoder integration runs only when
+onnxruntime and a cached model are present — tests never download weights.
 """
 
 import importlib.util
@@ -18,6 +18,8 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
 from systemone import (  # noqa: E402
     JevK5Error,
     JevK5ServerBackend,
+    KevBackend,
+    KevError,
     OnnxCrossEncoder,
     RerankBackend,
 )
@@ -216,3 +218,134 @@ def test_onnx_encoder_ranks_paraphrase_first():
     good = enc.score("the sky is blue", "the sky is blue in color")
     bad = enc.score("the sky is blue", "quantum banana firmware protocol")
     assert good > bad
+
+
+# -- KevBackend (kev.serve client) ------------------------------------------
+
+
+def _kev_payload():
+    # Real kev.serve shapes (kev/api.py to_answers): noul carries only
+    # "noul"; score probabilities are index-keyed with a legend.
+    return {"answers": {
+        "action": {"type": "choice", "choice": "up", "confidence": 0.6,
+                   "probabilities": {"up": 0.8, "down": 0.2}},
+        "level": {"type": "score", "score": 0.7, "confidence": 0.4,
+                  "legend": {"0": "low", "1": "high"},
+                  "probabilities": {"0": 0.3, "1": 0.7}},
+        "ok": {"type": "noul", "noul": 0.9},
+    }, "usage": {"input_tokens": 42, "output_tokens": 17}}
+
+
+def test_kev_posts_typesafe_dialect(monkeypatch):
+    seen = {}
+
+    def fake_urlopen(req, timeout=None):
+        seen["url"] = req.full_url
+        seen["body"] = json.loads(req.data.decode())
+        return _FakeResp(_kev_payload())
+
+    monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
+    out = KevBackend(base_url="http://kev-test:8008").systemone(
+        "s", _questions())
+    assert seen["url"] == "http://kev-test:8008/v1/systemone"
+    assert seen["body"]["model"] == "kev-latest"
+    sent = seen["body"]["questions"]["action"]
+    assert sent["type"] == "choice" and set(sent["criteria"]) == {
+        "up", "down"}
+    assert out["action"]["choice"] == "up"
+    assert out["level"]["level"] == "high"
+    assert out["level"]["distribution"] == {"low": 0.3, "high": 0.7}
+    assert out["level"]["legend"] == {"low": "low", "high": "high"}
+    assert out["ok"]["probability"] == 0.9
+    assert out["_meta"]["backend"] == "kev"
+    assert out["_meta"]["usage"] == {"input_tokens": 42,
+                                     "output_tokens": 17}
+
+
+def test_kev_sends_bearer_auth_when_configured(monkeypatch):
+    seen = {}
+
+    def fake_urlopen(req, timeout=None):
+        seen["auth"] = req.get_header("Authorization")
+        return _FakeResp(_kev_payload())
+
+    monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
+    monkeypatch.setenv("KEV_API_KEY", "s3cret")
+    KevBackend(base_url="http://kev-test:8008").systemone(
+        "s", _questions()[:1])
+    assert seen["auth"] == "Bearer s3cret"
+
+
+def test_kev_health_reads_v1_models(monkeypatch):
+    urls = []
+
+    def fake_urlopen(req, timeout=None):
+        urls.append(req.full_url)
+        return _FakeResp({"models": [{"name": "kev-latest"}]})
+
+    monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
+    assert KevBackend(base_url="http://kev-test:8008").health() is True
+    assert urls == ["http://kev-test:8008/v1/models"]
+
+
+def test_kev_health_false_on_transport_error(monkeypatch):
+    def fake_urlopen(req, timeout=None):
+        raise ValueError("nobody home")
+
+    monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
+    assert KevBackend(base_url="http://kev-test:8008").health() is False
+
+
+def test_kev_missing_answer_raises(monkeypatch):
+    monkeypatch.setattr(urllib.request, "urlopen",
+                        lambda req, timeout=None: _FakeResp({"answers": {}}))
+    try:
+        KevBackend(base_url="http://kev-test:8008").systemone(
+            "s", _questions()[:1])
+    except KevError as exc:
+        assert "missing answer" in str(exc)
+    else:
+        raise AssertionError("expected KevError")
+
+
+def test_kev_rejects_non_http():
+    try:
+        KevBackend(base_url="file:///etc/passwd")
+    except ValueError:
+        pass
+    else:
+        raise AssertionError("expected ValueError for file:// URL")
+
+
+def test_kev_media_dropped_and_reported(monkeypatch):
+    monkeypatch.setattr(
+        urllib.request, "urlopen",
+        lambda req, timeout=None: _FakeResp(_kev_payload()))
+    out = KevBackend(base_url="http://kev-test:8008").systemone(
+        "s", _questions(), images=["http://img/1.png"],
+        videos=["http://vid/1.mp4"])
+    assert out["_meta"]["media_dropped"] == {"images": 1, "videos": 1}
+
+
+def test_kev_env_config(monkeypatch):
+    monkeypatch.setenv("KEV_BASE_URL", "http://gpu-box:8008/")
+    monkeypatch.setenv("KEV_MODEL", "jaredpalmer/kev-4b")
+    b = KevBackend()
+    assert b.base_url == "http://gpu-box:8008"
+    assert b.model_name == "jaredpalmer/kev-4b"
+
+
+def test_kev_engine_wiring():
+    assert engine_backend_name(KevBackend.__new__(KevBackend)) == "kev"
+    assert "kev" in shim_module.ENGINE_CHOICES
+
+
+def test_kev_registry_pack_has_four_routable_tiers():
+    import systemone.shim as shim
+
+    pack = json.load(open(os.path.join(
+        os.path.dirname(shim.__file__), "kev_registry.json")))
+    cands = shim.candidates_from_registry(pack)
+    assert [c["tier"] for c in cands] == [
+        "kev-0.8b", "kev-4b", "kev-9b", "kev-27b"]
+    assert all(c["model_id"].startswith("jaredpalmer/kev-") for c in cands)

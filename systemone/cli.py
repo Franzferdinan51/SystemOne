@@ -528,7 +528,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_jevbench.add_argument("--limit", type=int, default=None,
                             help="score at most N items")
     p_jevbench.add_argument("--engine", default=None,
-                            choices=("auto", "local", "sglang", "jevk5", "onnx", "jev"),
+                            choices=("auto", "local", "sglang", "jevk5", "onnx", "jev", "kev"),
                             help="engine (default: $SYSTEMONE_ENGINE or auto)")
     p_jevbench.add_argument("--json", action="store_true",
                             help="emit the raw summary as JSON")
@@ -565,7 +565,7 @@ def build_parser() -> argparse.ArgumentParser:
                          help="decision sidecar port (default 8079)")
     p_serve.add_argument(
         "--engine", default=None,
-        choices=("auto", "local", "sglang", "jevk5", "onnx", "jev"),
+        choices=("auto", "local", "sglang", "jevk5", "onnx", "jev", "kev"),
         help="decision engine to serve (default: $SYSTEMONE_ENGINE or auto)")
     p_serve.set_defaults(func=cmd_serve)
 
