@@ -50,7 +50,14 @@ mcp = [
     # via mcp's server deps (pip-audit 2026-10-01: CVE-2026-101918 et al).
     "pyjwt>=2.15",
 ]
-dev = ["pytest>=7"]
+dev = [
+    "pytest>=7",
+    # Test-suite dependencies: the CI slim job installs .[dev] and runs the
+    # full suite, so everything the tests import must be here.
+    "numpy",
+    "pillow>=9",  # test_clef_backend.py image decode paths
+    "scikit-learn",  # test_smoke.py calibration (Isotonic/Platt) tests
+]
 
 [project.scripts]
 systemone = "systemone.cli:main"
