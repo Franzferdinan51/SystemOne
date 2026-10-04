@@ -2888,6 +2888,7 @@ def serve(
     engine: Any = None,
     registry: Dict[str, Dict[str, Any]] | None = None,
     engine_name: str | None = None,
+    host: str = "127.0.0.1",
 ) -> ThreadingHTTPServer:
     """Build (but do not block on) the shim server.
 
@@ -2908,7 +2909,7 @@ def serve(
             $SYSTEMONE_ENGINE, default "auto".
     """
     engine = engine or create_engine(engine_name)
-    server = ThreadingHTTPServer(("127.0.0.1", port), ShimHandler)
+    server = ThreadingHTTPServer((host, port), ShimHandler)
     server.engine = engine  # type: ignore[attr-defined]
     server.engine_backend = engine_backend_name(engine)  # type: ignore[attr-defined]
     server.metrics = Metrics()  # type: ignore[attr-defined]
@@ -2959,6 +2960,15 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="Local /v1/systemone shim server")
     parser.add_argument("--port", type=int, default=8765)
     parser.add_argument(
+        "--host",
+        default="127.0.0.1",
+        help=(
+            "interface to bind (default 127.0.0.1; use 0.0.0.0 to allow "
+            "other devices on the network, e.g. a phone over Tailscale, "
+            "to reach the shim)."
+        ),
+    )
+    parser.add_argument(
         "--engine",
         choices=list(ENGINE_CHOICES),
         default=None,
@@ -2990,9 +3000,9 @@ def main() -> None:
     if args.daemonize and _win32_detach(sys.argv[1:]):
         print("systemone shim detached; parent exiting")
         return
-    server = serve(args.port, engine_name=args.engine)
+    server = serve(args.port, engine_name=args.engine, host=args.host)
     print(
-        f"systemone shim on http://127.0.0.1:{args.port}/v1/systemone "
+        f"systemone shim on http://{args.host}:{args.port}/v1/systemone "
         f"and /v1/systemone/route (model {server.engine.model_name}, "
         f"backend {server.engine_backend})"
     )
