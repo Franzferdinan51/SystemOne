@@ -759,6 +759,13 @@ def route_decision(
                             f" Exploration roll (p={explore:.2f}) kept "
                             f"'{route['model_id']}'."
                         )
+    # Track model usage for lifecycle management (idle reaping via `lms unload`).
+    # Never raises — lifecycle is best-effort.
+    try:
+        from .model_lifecycle import track_model_use
+        track_model_use(route["model_id"])
+    except Exception:
+        pass
     return route
 
 

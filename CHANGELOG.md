@@ -4,6 +4,20 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [Unreleased]
+
+### Added
+
+- `systemone.model_lifecycle`: model VRAM lifecycle management. Tracks
+  model usage on every route decision and reaps idle models via `lms unload`
+  (the only reliable LM Studio unload interface — no stable HTTP endpoint
+  exists). Fixes the 128GB VRAM blowout where hung/ended sessions left 15+
+  models resident. Includes `track_model_use()`, `release_session_models()`
+  (call on session end), `reap_idle()`, `start_reaper()` background thread
+  (default 15min idle timeout), and `unload_all()` emergency flush.
+  Env overrides: `SYSTEMONE_IDLE_TIMEOUT_S`, `SYSTEMONE_REAPER_INTERVAL_S`,
+  `SYSTEMONE_NO_REAPER`, `SYSTEMONE_LMS_BIN`.
+
 ## [0.2.0] - 2026-10-02
 
 Ecosystem pull: cascades, ensembles, conformal sets, route controls, bulk
