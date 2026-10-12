@@ -1,0 +1,7 @@
+name: systemone-bridge
+version: 1.0.0
+description: "Bridge Hermes to SystemOne's DecisionLoop: confidence-gated pre_tool_call for risky actions, post_tool_call calibration logging, plus tools — systemone_env (FileSystem/Shell/WebFetch Envs), systemone_decide (batched questions), systemone_run (See-Decide-Act task loop). Fail-open when SystemOne is unavailable."
+author: "Juno"
+provides_hooks:
+  - pre_tool_call
+  - post_tool_call
