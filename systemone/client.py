@@ -1,1 +1,257 @@
-IiIic3lzdGVtb25lLmNsaWVudCDigJQgdGhpbiBIVFRQIGNsaWVudCBmb3IgYSBsaXZlIFN5c3RlbU9uZSBzaGltLgoKVGhlIGFnZW50IGxheWVyIChDTEksIE1DUCB0b29scywgQUNQIGFkYXB0ZXIpIHRhbGtzIHRvIGEgKmRlcGxveWVkKiBzaGltCm92ZXIgSFRUUCBhbmQgbmV2ZXIgbG9hZHMgbW9kZWxzIGl0c2VsZi4gVGhlIHNoaW0gVVJMIGlzIG92ZXJyaWRhYmxlOgoKICAgIFNZU1RFTU9ORV9TSElNX1VSTD1odHRwOi8vbWFjbWluaTo4NzY1ICAgIyBlbnYgdmFyCiAgICBTeXN0ZW1PbmVDbGllbnQoImh0dHA6Ly9tYWNtaW5pOjg3NjUiKSAgICMgZXhwbGljaXQgYXJndW1lbnQKICAgICMgZGVmYXVsdCB3aGVuIG5laXRoZXIgaXMgZ2l2ZW46IGh0dHA6Ly8xMjcuMC4wLjE6ODc2NQoKU3RkbGliIG9ubHkgKHVybGxpYikg4oCUIG5vIGV4dHJhIGRlcGVuZGVuY2llcyBmb3IgdGhlIGFnZW50IGxheWVyLgoKTm8gbW9kZWwgSURzIGFyZSBoYXJkLWNvZGVkIGhlcmU6IHJvdXRpbmcgYW5kIGRlY2lzaW9ucyBhcmUgZGVsZWdhdGVkIHRvCnRoZSBzaGltLCB3aGljaCBvd25zIGl0cyBtb2RlbCByZWdpc3RyeS4gVGhlIGRlY2lkZSBlbmRwb2ludCBpcyBzZXJ2ZWQgYnkKdGhlIGRlY2lzaW9uIHNpZGVjYXIg4oCUIHRoZSBzb2xlIGJhY2tlbmQgaXMgTWFwaWthL2RlY2lkZXItNGIgdjIuMQooQXBhY2hlLTIuMCkg4oCUIHdpdGggYSBmYWlsLW9wZW4gbG9jYWwgR0xpQ2xhc3MgZmFsbGJhY2sgKGJhY2tlbmQKImZhbGxiYWNrIikgd2hlbiB0aGUgc2lkZWNhciBpcyB1bnJlYWNoYWJsZS4gU2VlIHRoZSBzaGltJ3MgZGVjaWRlCmNvbnRyYWN0LgoiIiIKCmZyb20gX19mdXR1cmVfXyBpbXBvcnQgYW5ub3RhdGlvbnMKCmltcG9ydCBqc29uCmltcG9ydCBvcwppbXBvcnQgdXJsbGliLmVycm9yCmltcG9ydCB1cmxsaWIucmVxdWVzdApmcm9tIHR5cGluZyBpbXBvcnQgQW55LCBEaWN0LCBMaXN0LCBPcHRpb25hbAoKU0hJTV9VUkxfRU5WID0gIlNZU1RFTU9ORV9TSElNX1VSTCIKREVGQVVMVF9TSElNX1VSTCA9ICJodHRwOi8vMTI3LjAuMC4xOjg3NjUiCgoKZGVmIGRlZmF1bHRfc2hpbV91cmwoKSAtPiBzdHI6CiAgICAiIiJTaGltIGJhc2UgVVJMOiAkU1lTVEVNT05FX1NISU1fVVJMLCBlbHNlIHRoZSBsb2NhbGhvc3QgZGVmYXVsdC4iIiIKICAgIHJldHVybiAob3MuZW52aXJvbi5nZXQoU0hJTV9VUkxfRU5WKSBvciAiIikuc3RyaXAoKSBvciBERUZBVUxUX1NISU1fVVJMCgoKY2xhc3MgU2hpbUVycm9yKEV4Y2VwdGlvbik6CiAgICAiIiJUaGUgc2hpbSByZWZ1c2VkIHRoZSByZXF1ZXN0LCBvciB0aGUgc2hpbSBjb3VsZCBub3QgYmUgcmVhY2hlZC4iIiIKCiAgICBkZWYgX19pbml0X18oCiAgICAgICAgc2VsZiwKICAgICAgICBtZXNzYWdlOiBzdHIsCiAgICAgICAgc3RhdHVzOiBPcHRpb25hbFtpbnRdID0gTm9uZSwKICAgICAgICBwYXlsb2FkOiBPcHRpb25hbFtEaWN0W3N0ciwgQW55XV0gPSBOb25lLAogICAgKSAtPiBOb25lOgogICAgICAgIHN1cGVyKCkuX19pbml0X18obWVzc2FnZSkKICAgICAgICBzZWxmLnN0YXR1cyA9IHN0YXR1cwogICAgICAgIHNlbGYucGF5bG9hZCA9IHBheWxvYWQKCgpjbGFzcyBTeXN0ZW1PbmVDbGllbnQ6CiAgICAiIiJIVFRQIGNsaWVudCBmb3IgdGhlIFN5c3RlbU9uZSBzaGltJ3MgYWdlbnQgZW5kcG9pbnRzLiIiIgoKICAgIGRlZiBfX2luaXRfXyhzZWxmLCBiYXNlX3VybDogT3B0aW9uYWxbc3RyXSA9IE5vbmUsIHRpbWVvdXQ6IGZsb2F0ID0gMTIwLjApIC0+IE5vbmU6CiAgICAgICAgZnJvbSAucGF0dGVybnMgaW1wb3J0IHJlcXVpcmVfaHR0cF91cmwKCiAgICAgICAgc2VsZi5iYXNlX3VybCA9IHJlcXVpcmVfaHR0cF91cmwoCiAgICAgICAgICAgIChiYXNlX3VybCBvciBkZWZhdWx0X3NoaW1fdXJsKCkpLnJzdHJpcCgiLyIpLCB3aGF0PSJzaGltIFVSTCIKICAgICAgICApCiAgICAgICAgc2VsZi50aW1lb3V0ID0gdGltZW91dAoKICAgICMgLS0gdHJhbnNwb3J0IC0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLQogICAgZGVmIF9yZXF1ZXN0KAogICAgICAgIHNlbGYsIG1ldGhvZDogc3RyLCBwYXRoOiBzdHIsIHBheWxvYWQ6IE9wdGlvbmFsW0RpY3Rbc3RyLCBBbnldXSA9IE5vbmUKICAgICkgLT4gRGljdFtzdHIsIEFueV06CiAgICAgICAgZGF0YTogT3B0aW9uYWxbYnl0ZXNdID0gTm9uZQogICAgICAgIGhlYWRlcnMgPSB7IkFjY2VwdCI6ICJhcHBsaWNhdGlvbi9qc29uIn0KICAgICAgICBpZiBwYXlsb2FkIGlzIG5vdCBOb25lOgogICAgICAgICAgICBkYXRhID0ganNvbi5kdW1wcyhwYXlsb2FkKS5lbmNvZGUoInV0Zi04IikKICAgICAgICAgICAgaGVhZGVyc1siQ29udGVudC1UeXBlIl0gPSAiYXBwbGljYXRpb24vanNvbiIKICAgICAgICByZXEgPSB1cmxsaWIucmVxdWVzdC5SZXF1ZXN0KAogICAgICAgICAgICBzZWxmLmJhc2VfdXJsICsgcGF0aCwgZGF0YT1kYXRhLCBoZWFkZXJzPWhlYWRlcnMsIG1ldGhvZD1tZXRob2QKICAgICAgICApCiAgICAgICAgdHJ5OgogICAgICAgICAgICB3aXRoIHVybGxpYi5yZXF1ZXN0LnVybG9wZW4ocmVxLCB0aW1lb3V0PXNlbGYudGltZW91dCkgYXMgcmVzcDogICMgbm9zZWMgQjMxMCAtLSBzY2hlbWUgZW5mb3JjZWQgaW4gX19pbml0X18gdmlhIHBhdHRlcm5zLnJlcXVpcmVfaHR0cF91cmw7IG5vc2VtZ3JlcAogICAgICAgICAgICAgICAgYm9keSA9IHJlc3AucmVhZCgpCiAgICAgICAgZXhjZXB0IHVybGxpYi5lcnJvci5IVFRQRXJyb3IgYXMgZXhjOgogICAgICAgICAgICBkZXRhaWwgPSBleGMucmVhZCgpLmRlY29kZSgidXRmLTgiLCAicmVwbGFjZSIpCiAgICAgICAgICAgIHRyeToKICAgICAgICAgICAgICAgIHBhcnNlZCA9IGpzb24ubG9hZHMoZGV0YWlsIG9yICJ7fSIpCiAgICAgICAgICAgICAgICBtZXNzYWdlID0gcGFyc2VkLmdldCgiZXJyb3IiKSBvciBkZXRhaWwgb3IgZiJIVFRQIHtleGMuY29kZX0iCiAgICAgICAgICAgIGV4Y2VwdCBWYWx1ZUVycm9yOgogICAgICAgICAgICAgICAgcGFyc2VkLCBtZXNzYWdlID0gTm9uZSwgZGV0YWlsIG9yIGYiSFRUUCB7ZXhjLmNvZGV9IgogICAgICAgICAgICByYWlzZSBTaGltRXJyb3IoCiAgICAgICAgICAgICAgICBmInNoaW0gcmVmdXNlZCAoe2V4Yy5jb2RlfSk6IHttZXNzYWdlfSIsCiAgICAgICAgICAgICAgICBzdGF0dXM9ZXhjLmNvZGUsCiAgICAgICAgICAgICAgICBwYXlsb2FkPXBhcnNlZCwKICAgICAgICAgICAgKSBmcm9tIGV4YwogICAgICAgIGV4Y2VwdCAodXJsbGliLmVycm9yLlVSTEVycm9yLCBUaW1lb3V0RXJyb3IsIE9TRXJyb3IpIGFzIGV4YzoKICAgICAgICAgICAgcmVhc29uID0gZ2V0YXR0cihleGMsICJyZWFzb24iLCBleGMpCiAgICAgICAgICAgIHJhaXNlIFNoaW1FcnJvcigKICAgICAgICAgICAgICAgIGYiY2Fubm90IHJlYWNoIHNoaW0gYXQge3NlbGYuYmFzZV91cmx9e3BhdGh9OiB7cmVhc29ufSIKICAgICAgICAgICAgKSBmcm9tIGV4YwogICAgICAgIHRyeToKICAgICAgICAgICAgcGFyc2VkX2JvZHkgPSBqc29uLmxvYWRzKGJvZHkuZGVjb2RlKCJ1dGYtOCIpIG9yICJ7fSIpCiAgICAgICAgZXhjZXB0IFZhbHVlRXJyb3IgYXMgZXhjOgogICAgICAgICAgICByYWlzZSBTaGltRXJyb3IoZiJzaGltIHJldHVybmVkIG5vbi1KU09OIGF0IHtwYXRofToge2V4Y30iKSBmcm9tIGV4YwogICAgICAgIGlmIG5vdCBpc2luc3RhbmNlKHBhcnNlZF9ib2R5LCBkaWN0KToKICAgICAgICAgICAgcmFpc2UgU2hpbUVycm9yKGYic2hpbSByZXR1cm5lZCBhIG5vbi1vYmplY3QgYXQge3BhdGh9IikKICAgICAgICByZXR1cm4gcGFyc2VkX2JvZHkKCiAgICAjIC0tIGVuZHBvaW50cyAtLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0KICAgIGRlZiBoZWFsdGgoc2VsZikgLT4gRGljdFtzdHIsIEFueV06CiAgICAgICAgIiIiR0VUIC9oZWFsdGh6IOKAlCBzaGltIGxpdmVuZXNzIHBsdXMgdGhlIGxvYWRlZCBlbmdpbmUgbW9kZWwuIiIiCiAgICAgICAgcmV0dXJuIHNlbGYuX3JlcXVlc3QoIkdFVCIsICIvaGVhbHRoeiIpCgogICAgZGVmIHJvdXRlKAogICAgICAgIHNlbGYsCiAgICAgICAgdGFzazogc3RyLAogICAgICAgIGNvc3RfYmlhczogc3RyID0gImJhbGFuY2VkIiwKICAgICAgICB0aWVyczogT3B0aW9uYWxbTGlzdFtzdHJdXSA9IE5vbmUsCiAgICApIC0+IERpY3Rbc3RyLCBBbnldOgogICAgICAgICIiIlBPU1QgL3YxL3N5c3RlbW9uZS9yb3V0ZSDigJQgY2hlYXBlc3Qgc3VmZmljaWVudCB0aWVyIGZvciAqdGFzayouCgogICAgICAgIFJldHVybnMgdGhlIGZ1bGwgc2hpbSBwYXlsb2FkOiB7InJvdXRlIjogey4uLn0sICJtb2RlbCI6IC4uLiwgLi4ufS4KICAgICAgICBUaGUgaW50ZXJlc3RpbmcgYml0cyBsaXZlIHVuZGVyIHBheWxvYWRbInJvdXRlIl06IHRpZXIsIGNvbmZpZGVuY2UsCiAgICAgICAgbWFyZ2luLCBjYWxpYnJhdGVkX3Byb2JhYmlsaXRpZXMsIHJhdGlvbmFsZSwgbW9kZWxfaWQsIGVmZm9ydC4KICAgICAgICAiIiIKICAgICAgICBib2R5OiBEaWN0W3N0ciwgQW55XSA9IHsidGFzayI6IHRhc2ssICJjb3N0X2JpYXMiOiBjb3N0X2JpYXN9CiAgICAgICAgaWYgdGllcnM6CiAgICAgICAgICAgIGJvZHlbInRpZXJzIl0gPSB0aWVycwogICAgICAgIHJldHVybiBzZWxmLl9yZXF1ZXN0KCJQT1NUIiwgIi92MS9zeXN0ZW1vbmUvcm91dGUiLCBib2R5KQoKICAgIGRlZiBkZWNpZGUoCiAgICAgICAgc2VsZiwKICAgICAgICBzdGF0ZTogQW55LAogICAgICAgIGluc3RydWN0aW9uczogc3RyLAogICAgICAgIGNyaXRlcmlhOiBBbnkgPSBOb25lLAogICAgICAgIHR5cGU6IHN0ciA9ICJjaG9pY2UiLAogICAgKSAtPiBEaWN0W3N0ciwgQW55XToKICAgICAgICAiIiJQT1NUIC92MS9zeXN0ZW1vbmUvZGVjaWRlIOKAlCBvbmUgdHlwZWQgZGVjaXNpb24uCgogICAgICAgIHR5cGU6ICJjaG9pY2UiIHwgIm5vdWwiIHwgInNjb3JlIi4gY3JpdGVyaWE6IGNob2ljZSAtPiB7bGFiZWw6IGRlc2N9LAogICAgICAgIG5vdWwgLT4geyJ5ZXMiOiAuLi4sICJubyI6IC4uLn0gb3IgeyJ0cnVlIjogLi4uLCAiZmFsc2UiOiAuLi59CiAgICAgICAgKG9wdGlvbmFsKSwgc2NvcmUgLT4gb3JkZXJlZCBsaXN0IG9mIGxldmVsIGRlc2NyaXB0aW9ucy4gUmV0dXJucwogICAgICAgIHRoZSBkZWNpZGUgcGF5bG9hZCwgaW5jbHVkaW5nICJiYWNrZW5kIjogImRlY2lkZXIiIChzaWRlY2FyKSBvcgogICAgICAgICJmYWxsYmFjayIgKGxvY2FsIEdMaUNsYXNzIGZhaWwtb3BlbikuCiAgICAgICAgIiIiCiAgICAgICAgYm9keTogRGljdFtzdHIsIEFueV0gPSB7CiAgICAgICAgICAgICJzdGF0ZSI6IHN0YXRlLAogICAgICAgICAgICAiaW5zdHJ1Y3Rpb25zIjogaW5zdHJ1Y3Rpb25zLAogICAgICAgICAgICAidHlwZSI6IHR5cGUsCiAgICAgICAgfQogICAgICAgIGlmIGNyaXRlcmlhIGlzIG5vdCBOb25lOgogICAgICAgICAgICBib2R5WyJjcml0ZXJpYSJdID0gY3JpdGVyaWEKICAgICAgICByZXR1cm4gc2VsZi5fcmVxdWVzdCgiUE9TVCIsICIvdjEvc3lzdGVtb25lL2RlY2lkZSIsIGJvZHkpCgogICAgZGVmIHJhbmtfcGxhbnMoCiAgICAgICAgc2VsZiwgdGFzazogc3RyLCBwbGFuczogTGlzdFtEaWN0W3N0ciwgQW55XV0KICAgICkgLT4gRGljdFtzdHIsIEFueV06CiAgICAgICAgIiIiUE9TVCAvdjEvc3lzdGVtb25lL3JhbmstcGxhbnMg4oCUIG9yZGVyIHBsYW5zIGJ5IFAoc3VjY2VzcyB8IHRhc2spLiIiIgogICAgICAgIHJldHVybiBzZWxmLl9yZXF1ZXN0KAogICAgICAgICAgICAiUE9TVCIsICIvdjEvc3lzdGVtb25lL3JhbmstcGxhbnMiLCB7InRhc2siOiB0YXNrLCAicGxhbnMiOiBwbGFuc30KICAgICAgICApCgogICAgZGVmIHBlcm11dGUoCiAgICAgICAgc2VsZiwKICAgICAgICBzdGF0ZTogQW55LAogICAgICAgIHF1ZXN0aW9uOiBEaWN0W3N0ciwgQW55XSwKICAgICAgICBuX3Blcm06IGludCA9IDgsCiAgICAgICAgc2VlZDogaW50ID0gMCwKICAgICkgLT4gRGljdFtzdHIsIEFueV06CiAgICAgICAgIiIiUE9TVCAvdjEvc3lzdGVtb25lL3Blcm11dGUg4oCUIG9uZSBjaG9pY2UgdW5kZXIgbl9wZXJtIG9yZGVycy4KCiAgICAgICAgcXVlc3Rpb246IFR5cGVTYWZlIGNob2ljZSBxdWVzdGlvbi4gUmV0dXJucyB7InJ1bnMiLAogICAgICAgICJhcmdtYXhfc3RhYmxlIiwgInNwcmVhZCIsIC4uLn0uCiAgICAgICAgIiIiCiAgICAgICAgcmV0dXJuIHNlbGYuX3JlcXVlc3QoCiAgICAgICAgICAgICJQT1NUIiwKICAgICAgICAgICAgIi92MS9zeXN0ZW1vbmUvcGVybXV0ZSIsCiAgICAgICAgICAgIHsic3RhdGUiOiBzdGF0ZSwgInF1ZXN0aW9uIjogcXVlc3Rpb24sCiAgICAgICAgICAgICAibl9wZXJtIjogbl9wZXJtLCAic2VlZCI6IHNlZWR9LAogICAgICAgICkKCiAgICBkZWYgYmF0Y2goCiAgICAgICAgc2VsZiwKICAgICAgICBpdGVtczogTGlzdFtEaWN0W3N0ciwgQW55XV0sCiAgICApIC0+IERpY3Rbc3RyLCBBbnldOgogICAgICAgICIiIlBPU1QgL3YxL3N5c3RlbW9uZS9iYXRjaCDigJQganVkZ2UgbWFueSBUeXBlU2FmZSBib2RpZXMgYXQgb25jZS4KCiAgICAgICAgaXRlbXM6IFt7c3RhdGUsIHF1ZXN0aW9ucywgLi4ufV0gaW4gL3YxL3N5c3RlbW9uZSBzaGFwZSAoMS4uMzIpLgogICAgICAgIFJldHVybnMgeyJyZXN1bHRzIjogW3sic3RhdHVzIjogMjAwLCAiYW5zd2VycyIsIC4uLn0gfAogICAgICAgIHsic3RhdHVzIjogNHh4LzV4eCwgImVycm9yIjogLi4ufV0sICJtb2RlbCIsICJuX2l0ZW1zIn0uCiAgICAgICAgIiIiCiAgICAgICAgcmV0dXJuIHNlbGYuX3JlcXVlc3QoCiAgICAgICAgICAgICJQT1NUIiwgIi92MS9zeXN0ZW1vbmUvYmF0Y2giLCB7Iml0ZW1zIjogaXRlbXN9CiAgICAgICAgKQoKICAgIGRlZiBkZWNpc2lvbnMoCiAgICAgICAgc2VsZiwKICAgICAgICBpbnB1dDogQW55LAogICAgICAgIHF1ZXN0aW9uczogTGlzdFtEaWN0W3N0ciwgQW55XV0sCiAgICAgICAgbW9kZWw6IE9wdGlvbmFsW3N0cl0gPSBOb25lLAogICAgKSAtPiBEaWN0W3N0ciwgQW55XToKICAgICAgICAiIiJQT1NUIC92MS9kZWNpc2lvbnMg4oCUIGJhdGNoZWQgdHlwZWQgcXVlc3Rpb25zLCBTR0xhbmcgZGlhbGVjdC4KCiAgICAgICAgcXVlc3Rpb25zOiBbeyJpZCI6IHN0ciwgInR5cGUiOiAiY2hvaWNlInwic2NvcmUifCJ5ZXNfbm8iLAogICAgICAgICJxdWVzdGlvbiI6IHN0ciwgIm9wdGlvbnMiOiBbeyJuYW1lIjogc3RyfSwgLi4uXSB8CiAgICAgICAgImxldmVscyI6IFtzdHIsIC4uLl19XS4gU2NvcmUgcHJvYmFiaWxpdGllcyBjb21lIGJhY2sga2V5ZWQgYnkKICAgICAgICBsZXZlbCBpbmRleCAoIjAiLSI5Iik7IHllc19ubyBhbnN3ZXJzIGNhcnJ5IHByb2JhYmlsaXRpZXMKICAgICAgICB7InllcyIsICJubyJ9LiBpbnB1dDogc3RhdGUgdGV4dCAoaW1hZ2UgcGFydHMgYXJlCiAgICAgICAgbm90ZWQtYW5kLXNraXBwZWQ6IHRoZSBlbmRwb2ludCBpcyB0ZXh0LW9ubHkgdXBzdHJlYW0pLgogICAgICAgIFJldHVybnMgeyJhbnN3ZXJzIjogey4uLn19LgogICAgICAgICIiIgogICAgICAgIGZyb20gLnBhdHRlcm5zIGltcG9ydCBkZWZhdWx0X2RlY2lzaW9uX21vZGVsCiAgICAgICAgYm9keTogRGljdFtzdHIsIEFueV0gPSB7ImlucHV0IjogaW5wdXQsICJxdWVzdGlvbnMiOiBxdWVzdGlvbnN9CiAgICAgICAgYm9keVsibW9kZWwiXSA9IG1vZGVsIG9yIGRlZmF1bHRfZGVjaXNpb25fbW9kZWwoKQogICAgICAgIHJldHVybiBzZWxmLl9yZXF1ZXN0KCJQT1NUIiwgIi92MS9kZWNpc2lvbnMiLCBib2R5KQoKICAgIGRlZiBzeXN0ZW1vbmUoCiAgICAgICAgc2VsZiwKICAgICAgICBzdGF0ZTogQW55LAogICAgICAgIHF1ZXN0aW9uczogQW55LAogICAgICAgIG1vZGVsOiBPcHRpb25hbFtzdHJdID0gTm9uZSwKICAgICkgLT4gRGljdFtzdHIsIEFueV06CiAgICAgICAgIiIiUE9TVCAvdjEvc3lzdGVtb25lIOKAlCBiYXRjaGVkIHR5cGVkIHF1ZXN0aW9ucywgVHlwZVNhZmUgZGlhbGVjdC4KCiAgICAgICAgcXVlc3Rpb25zOiB7aWQ6IHsidHlwZSIsICJpbnN0cnVjdGlvbnMiLCAiY3JpdGVyaWEifX0gKGFsc28gYWNjZXB0cwogICAgICAgIGEgbGlzdCBvZiBxdWVzdGlvbiBtYXBwaW5ncyBjYXJyeWluZyAiaWQiKS4gUmV0dXJucyB7ImFuc3dlcnMiOiAuLi59LgogICAgICAgICIiIgogICAgICAgIGZyb20gLnBhdHRlcm5zIGltcG9ydCBkZWZhdWx0X2RlY2lzaW9uX21vZGVsCiAgICAgICAgYm9keTogRGljdFtzdHIsIEFueV0gPSB7InN0YXRlIjogc3RhdGUsICJxdWVzdGlvbnMiOiBxdWVzdGlvbnN9CiAgICAgICAgYm9keVsibW9kZWwiXSA9IG1vZGVsIG9yIGRlZmF1bHRfZGVjaXNpb25fbW9kZWwoKQogICAgICAgIHJldHVybiBzZWxmLl9yZXF1ZXN0KCJQT1NUIiwgIi92MS9zeXN0ZW1vbmUiLCBib2R5KQoKICAgIGRlZiBzdGF0dXMoc2VsZiwgcHJvYmU6IGJvb2wgPSBUcnVlKSAtPiBEaWN0W3N0ciwgQW55XToKICAgICAgICAiIiJDb21wb3NpdGUgaGVhbHRoOiBzaGltIGxpdmVuZXNzIHBsdXMgdGhlIGRlY2lzaW9uIGJhY2tlbmQgaW4gdXNlLgoKICAgICAgICBUaGUgZGVjaXNpb24gYmFja2VuZCAoImRlY2lkZXIiIHNpZGVjYXIgZW5naW5lIHZzCiAgICAgICAgImZhbGxiYWNrIiBHTGlDbGFzcykgaXMgb25seSBvYnNlcnZhYmxlIGJ5IGFza2luZyBmb3IgYSBkZWNpc2lvbiwKICAgICAgICBzbyBzdGF0dXMoKSBydW5zIG9uZSB0aW55IG5vdWwgcHJvYmUgdW5sZXNzIHByb2JlPUZhbHNlLgogICAgICAgICIiIgogICAgICAgIG91dDogRGljdFtzdHIsIEFueV0gPSB7CiAgICAgICAgICAgICJzaGltX3VybCI6IHNlbGYuYmFzZV91cmwsCiAgICAgICAgICAgICJzaGltIjogTm9uZSwKICAgICAgICAgICAgImRlY2lzaW9uIjogTm9uZSwKICAgICAgICB9CiAgICAgICAgdHJ5OgogICAgICAgICAgICBvdXRbInNoaW0iXSA9IHNlbGYuaGVhbHRoKCkKICAgICAgICBleGNlcHQgU2hpbUVycm9yIGFzIGV4YzoKICAgICAgICAgICAgb3V0WyJzaGltIl0gPSB7Im9rIjogRmFsc2UsICJlcnJvciI6IHN0cihleGMpfQogICAgICAgICAgICByZXR1cm4gb3V0CiAgICAgICAgaWYgcHJvYmU6CiAgICAgICAgICAgIHRyeToKICAgICAgICAgICAgICAgIGRlY2lzaW9uID0gc2VsZi5kZWNpZGUoCiAgICAgICAgICAgICAgICAgICAgInN5c3RlbW9uZSBzdGF0dXMgcHJvYmUiLAogICAgICAgICAgICAgICAgICAgICJJcyB0aGlzIGEgc3RhdHVzIHByb2JlPyIsCiAgICAgICAgICAgICAgICAgICAgdHlwZT0ibm91bCIsCiAgICAgICAgICAgICAgICApCiAgICAgICAgICAgICAgICBvdXRbImRlY2lzaW9uIl0gPSB7CiAgICAgICAgICAgICAgICAgICAgImJhY2tlbmQiOiBkZWNpc2lvbi5nZXQoImJhY2tlbmQiKSwKICAgICAgICAgICAgICAgICAgICAibGF0ZW5jeV9tcyI6IGRlY2lzaW9uLmdldCgibGF0ZW5jeV9tcyIpLAogICAgICAgICAgICAgICAgICAgICJjb25maWRlbmNlIjogZGVjaXNpb24uZ2V0KCJjb25maWRlbmNlIiksCiAgICAgICAgICAgICAgICB9CiAgICAgICAgICAgIGV4Y2VwdCBTaGltRXJyb3IgYXMgZXhjOgogICAgICAgICAgICAgICAgb3V0WyJkZWNpc2lvbiJdID0geyJlcnJvciI6IHN0cihleGMpfQogICAgICAgIHJldHVybiBvdXQK
+"""systemone.client — thin HTTP client for a live SystemOne shim.
+
+The agent layer (CLI, MCP tools, ACP adapter) talks to a *deployed* shim
+over HTTP and never loads models itself. The shim URL is overridable:
+
+    SYSTEMONE_SHIM_URL=http://macmini:8765   # env var
+    SystemOneClient("http://macmini:8765")   # explicit argument
+    # default when neither is given: http://127.0.0.1:8765
+
+Stdlib only (urllib) — no extra dependencies for the agent layer.
+
+No model IDs are hard-coded here: routing and decisions are delegated to
+the shim, which owns its model registry. The decide endpoint is served by
+the decision sidecar — the sole backend is Mapika/decider-4b v2.1
+(Apache-2.0) — with a fail-open local GLiClass fallback (backend
+"fallback") when the sidecar is unreachable. See the shim's decide
+contract.
+"""
+
+from __future__ import annotations
+
+import json
+import os
+import urllib.error
+import urllib.request
+from typing import Any, Dict, List, Optional
+
+SHIM_URL_ENV = "SYSTEMONE_SHIM_URL"
+DEFAULT_SHIM_URL = "http://127.0.0.1:8765"
+
+
+def default_shim_url() -> str:
+    """Shim base URL: $SYSTEMONE_SHIM_URL, else the localhost default."""
+    return (os.environ.get(SHIM_URL_ENV) or "").strip() or DEFAULT_SHIM_URL
+
+
+class ShimError(Exception):
+    """The shim refused the request, or the shim could not be reached."""
+
+    def __init__(
+        self,
+        message: str,
+        status: Optional[int] = None,
+        payload: Optional[Dict[str, Any]] = None,
+    ) -> None:
+        super().__init__(message)
+        self.status = status
+        self.payload = payload
+
+
+class SystemOneClient:
+    """HTTP client for the SystemOne shim's agent endpoints."""
+
+    def __init__(self, base_url: Optional[str] = None, timeout: float = 120.0) -> None:
+        from .patterns import require_http_url
+
+        self.base_url = require_http_url(
+            (base_url or default_shim_url()).rstrip("/"), what="shim URL"
+        )
+        self.timeout = timeout
+
+    # -- transport ------------------------------------------------------
+    def _request(
+        self, method: str, path: str, payload: Optional[Dict[str, Any]] = None
+    ) -> Dict[str, Any]:
+        data: Optional[bytes] = None
+        headers = {"Accept": "application/json"}
+        if payload is not None:
+            data = json.dumps(payload).encode("utf-8")
+            headers["Content-Type"] = "application/json"
+        req = urllib.request.Request(
+            self.base_url + path, data=data, headers=headers, method=method
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=self.timeout) as resp:  # nosec B310 -- scheme enforced in __init__ via patterns.require_http_url; nosemgrep
+                body = resp.read()
+        except urllib.error.HTTPError as exc:
+            detail = exc.read().decode("utf-8", "replace")
+            try:
+                parsed = json.loads(detail or "{}")
+                message = parsed.get("error") or detail or f"HTTP {exc.code}"
+            except ValueError:
+                parsed, message = None, detail or f"HTTP {exc.code}"
+            raise ShimError(
+                f"shim refused ({exc.code}): {message}",
+                status=exc.code,
+                payload=parsed,
+            ) from exc
+        except (urllib.error.URLError, TimeoutError, OSError) as exc:
+            reason = getattr(exc, "reason", exc)
+            raise ShimError(
+                f"cannot reach shim at {self.base_url}{path}: {reason}"
+            ) from exc
+        try:
+            parsed_body = json.loads(body.decode("utf-8") or "{}")
+        except ValueError as exc:
+            raise ShimError(f"shim returned non-JSON at {path}: {exc}") from exc
+        if not isinstance(parsed_body, dict):
+            raise ShimError(f"shim returned a non-object at {path}")
+        return parsed_body
+
+    # -- endpoints ------------------------------------------------------
+    def health(self) -> Dict[str, Any]:
+        """GET /healthz — shim liveness plus the loaded engine model."""
+        return self._request("GET", "/healthz")
+
+    def route(
+        self,
+        task: str,
+        cost_bias: str = "balanced",
+        tiers: Optional[List[str]] = None,
+    ) -> Dict[str, Any]:
+        """POST /v1/systemone/route — cheapest sufficient tier for *task*.
+
+        Returns the full shim payload: {"route": {...}, "model": ..., ...}.
+        The interesting bits live under payload["route"]: tier, confidence,
+        margin, calibrated_probabilities, rationale, model_id, effort.
+        """
+        body: Dict[str, Any] = {"task": task, "cost_bias": cost_bias}
+        if tiers:
+            body["tiers"] = tiers
+        return self._request("POST", "/v1/systemone/route", body)
+
+    def decide(
+        self,
+        state: Any,
+        instructions: str,
+        criteria: Any = None,
+        type: str = "choice",
+    ) -> Dict[str, Any]:
+        """POST /v1/systemone/decide — one typed decision.
+
+        type: "choice" | "noul" | "score". criteria: choice -> {label: desc},
+        noul -> {"yes": ..., "no": ...} or {"true": ..., "false": ...}
+        (optional), score -> ordered list of level descriptions. Returns
+        the decide payload, including "backend": "decider" (sidecar) or
+        "fallback" (local GLiClass fail-open).
+        """
+        body: Dict[str, Any] = {
+            "state": state,
+            "instructions": instructions,
+            "type": type,
+        }
+        if criteria is not None:
+            body["criteria"] = criteria
+        return self._request("POST", "/v1/systemone/decide", body)
+
+    def rank_plans(
+        self, task: str, plans: List[Dict[str, Any]]
+    ) -> Dict[str, Any]:
+        """POST /v1/systemone/rank-plans — order plans by P(success | task)."""
+        return self._request(
+            "POST", "/v1/systemone/rank-plans", {"task": task, "plans": plans}
+        )
+
+    def permute(
+        self,
+        state: Any,
+        question: Dict[str, Any],
+        n_perm: int = 8,
+        seed: int = 0,
+    ) -> Dict[str, Any]:
+        """POST /v1/systemone/permute — one choice under n_perm orders.
+
+        question: TypeSafe choice question. Returns {"runs",
+        "argmax_stable", "spread", ...}.
+        """
+        return self._request(
+            "POST",
+            "/v1/systemone/permute",
+            {"state": state, "question": question,
+             "n_perm": n_perm, "seed": seed},
+        )
+
+    def batch(
+        self,
+        items: List[Dict[str, Any]],
+    ) -> Dict[str, Any]:
+        """POST /v1/systemone/batch — judge many TypeSafe bodies at once.
+
+        items: [{state, questions, ...}] in /v1/systemone shape (1..32).
+        Returns {"results": [{"status": 200, "answers", ...} |
+        {"status": 4xx/5xx, "error": ...}], "model", "n_items"}.
+        """
+        return self._request(
+            "POST", "/v1/systemone/batch", {"items": items}
+        )
+
+    def decisions(
+        self,
+        input: Any,
+        questions: List[Dict[str, Any]],
+        model: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """POST /v1/decisions — batched typed questions, SGLang dialect.
+
+        questions: [{"id": str, "type": "choice"|"score"|"yes_no",
+        "question": str, "options": [{"name": str}, ...] |
+        "levels": [str, ...]}]. Score probabilities come back keyed by
+        level index ("0"-"9"); yes_no answers carry probabilities
+        {"yes", "no"}. input: state text (image parts are
+        noted-and-skipped: the endpoint is text-only upstream).
+        Returns {"answers": {...}}.
+        """
+        from .patterns import default_decision_model
+        body: Dict[str, Any] = {"input": input, "questions": questions}
+        body["model"] = model or default_decision_model()
+        return self._request("POST", "/v1/decisions", body)
+
+    def systemone(
+        self,
+        state: Any,
+        questions: Any,
+        model: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """POST /v1/systemone — batched typed questions, TypeSafe dialect.
+
+        questions: {id: {"type", "instructions", "criteria"}} (also accepts
+        a list of question mappings carrying "id"). Returns {"answers": ...}.
+        """
+        from .patterns import default_decision_model
+        body: Dict[str, Any] = {"state": state, "questions": questions}
+        body["model"] = model or default_decision_model()
+        return self._request("POST", "/v1/systemone", body)
+
+    def status(self, probe: bool = True) -> Dict[str, Any]:
+        """Composite health: shim liveness plus the decision backend in use.
+
+        The decision backend ("decider" sidecar engine vs
+        "fallback" GLiClass) is only observable by asking for a decision,
+        so status() runs one tiny noul probe unless probe=False.
+        """
+        out: Dict[str, Any] = {
+            "shim_url": self.base_url,
+            "shim": None,
+            "decision": None,
+        }
+        try:
+            out["shim"] = self.health()
+        except ShimError as exc:
+            out["shim"] = {"ok": False, "error": str(exc)}
+            return out
+        if probe:
+            try:
+                decision = self.decide(
+                    "systemone status probe",
+                    "Is this a status probe?",
+                    type="noul",
+                )
+                out["decision"] = {
+                    "backend": decision.get("backend"),
+                    "latency_ms": decision.get("latency_ms"),
+                    "confidence": decision.get("confidence"),
+                }
+            except ShimError as exc:
+                out["decision"] = {"error": str(exc)}
+        return out

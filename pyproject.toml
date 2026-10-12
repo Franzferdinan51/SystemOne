@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "systemone"
 version = "0.2.0"
-description = "Local, keyless Jev-style typed decisions — choice, score, noul — on GLiClass or SGLang"
+description = "Open typed-decision layer: choice, score, and noul, calibrated probabilities, honest uncertainty, one batched call"
 readme = "README.md"
 requires-python = ">=3.10"
 license = { text = "MIT" }

@@ -1,12 +1,17 @@
 # systemone — open System One decisions
 
-A Jev-style typed-decision layer: `choice` / `score` / `noul` answers with
-calibrated probabilities, one batched call, honest uncertainty. TypeSafe's
+An open typed-decision layer: `choice`, `score`, and `noul`, with
+calibrated probabilities, honest uncertainty, one batched call. TypeSafe's
 Jev is a closed API; this package rebuilds that shape on hardware you
 control — a slim numpy-only base with eight swappable engines: local
 GLiClass (Apache-2.0, 32M–439M params), SGLang, JEV decision models,
 JevK5, Kev (0.8B–27B), Cloudflare Clef (9B/27B, multimodal), a CPU-only
 ONNX judge, and the decider-4b sidecar.
+
+The first job is a typed decision about a state, not a model assignment.
+Support triage, a guard before a side effect, and citation grounding are
+the jobs below. Picking an effort tier or a model is one optional facet
+later (`route`).
 
 ## Philosophy: See > Decide > Act
 
@@ -27,23 +32,59 @@ point). See [The agent loop](#the-agent-loop-see--decide--act).
 
 ## The decision surface
 
-SystemOne is a decision layer. Cost/quality routing is one facet of
-`route`, which is one facet of deciding. Every entry point below returns
-calibrated probabilities with honest uncertainty — decide first, then act:
+Ask a closed question about a state. Get calibrated probabilities back —
+`choice`, `score`, and `noul` — in one batched call, with honest
+uncertainty. The first concrete job is support triage:
+
+```python
+from systemone.decision_jobs import support_triage
+
+support_triage()
+# {"state": "Customer ticket: ...", "questions": [
+#   {"name": "queue", "type": "choice",
+#    "options": ["billing", "technical", "account", "abuse"]},
+#   {"name": "urgency", "type": "score",
+#    "levels": ["low", "medium", "high", "critical"]},
+#   {"name": "needs_human", "type": "noul",
+#    "statement": "A human must handle this ticket before any automated reply or side effect."},
+# ]}
+```
+
+```bash
+systemone decide --type choice \
+    --state "Payment service 500s for 12 minutes, checkout blocked" \
+    --instructions "Which queue should take this ticket?" \
+    --criteria billing="invoices and charges" \
+    --criteria technical="outages and bugs" \
+    --criteria account="access and profile" \
+    --criteria abuse="policy violations"
+```
+
+The same shape covers a pre-side-effect guard that can abstain (`none`)
+or withhold, and citation grounding (which passage, how strong, is the
+claim grounded). See [Quickstart](#quickstart). Every endpoint below
+returns that kind of answer. Model, effort, and cost routing is the last
+row — one optional facet, not the product:
 
 | Endpoint | Decides |
 |---|---|
-| `POST /v1/systemone/route` | effort tier + turn budget + ranked models/tools for a task |
-| `POST /v1/systemone/rank-plans` | which candidate plan to execute |
-| `POST /v1/systemone/decide` | one typed question (`choice` / `noul` / `score`) |
-| `POST /v1/systemone/permute` | whether a choice survives option reordering (verify before acting) |
+| `POST /v1/systemone/decide` | one typed question (`choice` / `score` / `noul`) |
 | `POST /v1/systemone/batch` | up to 32 typed questions in one call |
+| `POST /v1/systemone/permute` | whether a choice survives option reordering (verify before acting) |
 | `POST /v1/decide` | one JEV-wire-format decision (System 1 text+images, System 2 chat) |
+| `POST /v1/systemone/rank-plans` | which candidate plan to execute |
+| `POST /v1/systemone/route` | optional: effort tier + turn budget + ranked models/tools for a task |
 
 ## What's new
 
 ### October 2026
 
+- **Typed decision jobs** — support triage (`choice` queue + `score`
+  urgency + `noul` needs-human, one batch), a pre-side-effect action
+  guard that can abstain (`none`) or withhold, and citation grounding
+  (which passage, support strength, is the claim grounded). State in,
+  typed probabilities out, on `systemone.decision_jobs`. No route call.
+  See [Quickstart](#quickstart) and `systemone/examples/demo_decision_jobs.py`.
 - **Model preference override** — `SYSTEMONE_PREFER_MODELS=id1,id2`
   sorts the listed models first in `ranked_models` on every sort
   (explicit user override; unknown ids ignored). The bundled registry
@@ -146,22 +187,31 @@ In-process inference needs the local engine (`pip install
 install, run the shim instead and talk HTTP (see below).
 
 ```python
-from systemone import SystemOne, make_questions
+from systemone import SystemOne
+from systemone.decision_jobs import (
+    action_guard,
+    citation_grounding,
+    support_triage,
+)
 
 eng = SystemOne()  # loads gliclass-edge, ONE model at a time
 
-out = eng.systemone("Payment service 500 errors for 12 minutes, no ack from on-call", [
-    {"name": "team", "type": "choice",
-     "options": ["backend", "frontend", "devops", "support"]},
-    {"name": "impact", "type": "score",
-     "levels": ["low", "medium", "high", "critical"]},
-    {"name": "page_cto", "type": "noul",
-     "statement": "Should the CTO be woken up?"},
-])
+# Support triage: queue + urgency + whether a human must take it.
+triage = support_triage()
+out = eng.systemone(triage["state"], triage["questions"])
+out["queue"]        # {"choice": "technical", "probabilities": {...}, "confidence": 0.91}
+out["urgency"]      # {"level": "critical", "distribution": {...}, "confidence": 0.83}
+out["needs_human"]  # {"probability": 0.88, "answer": True, "confidence": 0.88}
 
-out["team"]    # {"choice": "backend", "probabilities": {...}, "confidence": 0.91}
-out["impact"]  # {"level": "critical", "distribution": {...}, "confidence": 0.83}
-out["page_cto"]# {"probability": 0.72, "answer": True, "confidence": 0.72}
+# Before a refund, a send, or any other side effect. "none" abstains;
+# withhold=true means do not execute.
+guard = action_guard()
+gated = eng.systemone(guard["state"], guard["questions"])
+
+# Which passage grounds a claim, how strong the support is, and whether
+# the claim is grounded at all.
+cited = citation_grounding()
+grounded = eng.systemone(cited["state"], cited["questions"])
 ```
 
 All questions in one call are evaluated in **one batched forward pass** —
@@ -203,7 +253,7 @@ never loads a model in-process. The shim URL resolves in this order:
 pip install -e .                     # slim: SGLang backend + shim client (numpy-only)
 pip install -e '.[local]'            # + torch/GLiClass local engine
 pip install -e '.[local,mcp,dev]'    # everything incl. MCP tools + pytest
-systemone --help          # route / decide / status / jevbench / battery / local / ask / serve
+systemone --help          # decide / route / status / jevbench / battery / local / ask / serve
 systemone-acp --help      # ACP agent (stdio)
 ```
 
@@ -224,6 +274,33 @@ breaking. Point the CLI at a remote shim with `SYSTEMONE_SHIM_URL`
 ### CLI
 
 ```bash
+$ systemone decide --type choice --state "Payment service 500s for 12 minutes, checkout blocked" \
+    --instructions "Which queue should take this ticket?" \
+    --criteria billing="invoices and charges" --criteria technical="outages and bugs" \
+    --criteria account="access and profile" --criteria abuse="policy violations"
+backend    : decider
+choice     : technical  (confidence 0.8120)
+probabilities:
+    technical                0.8604 #################
+    billing                  0.0711 #
+    account                  0.0418 #
+    abuse                    0.0267 #
+latency    : 240.2 ms
+
+$ systemone decide --type noul --state "The deploy pipeline is green and all checks passed" \
+    --instructions "Is it safe to deploy to production right now?"
+backend    : decider
+answer     : yes  (P(yes)=0.9510, confidence 0.9510)
+latency    : 231.6 ms
+
+$ systemone decide --type score --state "CI is green, canary at 5%, error budget intact" \
+    --instructions "How risky is executing the deploy right now?" \
+    --criteria low="safe to proceed" --criteria moderate="watch the canary" \
+    --criteria high="hold" --criteria blocking="do not deploy"
+backend    : decider
+level      : low  (confidence 0.7740)
+latency    : 248.1 ms
+
 $ systemone route "Write a SQL query to find duplicate customer emails in the users table"
 tier       : balanced
 confidence : 0.8537  (margin 0.7555)
@@ -232,31 +309,13 @@ effort     : medium
 uncertain  : False
 rationale  : Task '...' — 'balanced' (...) is the cheapest tier rated sufficient ...
 
-$ systemone decide --type noul --state "The deploy pipeline is green and all checks passed" \
-    --instructions "Is it safe to deploy to production right now?"
-backend    : decider
-answer     : yes  (P(yes)=0.9510, confidence 0.9510)
-latency    : 231.6 ms
-
-$ systemone decide --type choice --state "CI is green, canary at 5% error budget intact" \
-    --instructions "Which deploy action should we take?" \
-    --criteria ship="deploy to production now" --criteria hold="wait for the next window" \
-    --criteria rollback="roll back the canary"
-backend    : decider
-choice     : ship  (confidence 0.7987)
-probabilities:
-    ship                     0.8658 #################
-    hold                     0.1078 ##
-    rollback                 0.0264 #
-latency    : 262.7 ms
-
 $ systemone status
 shim       : http://127.0.0.1:8765
   ok       : yes  (engine model: knowledgator/gliclass-edge-v3.0)
   decide   : backend=decider  latency=84.7 ms  confidence=0.8149
 ```
 
-`route`, `decide`, and `status` also take `--json` for machine-readable output, plus global
+`decide`, `status`, and `route` also take `--json` for machine-readable output, plus global
 `--shim-url` and `--timeout`. `systemone battery` forwards its arguments
 verbatim to the calibration battery (`systemone/battery/run.py`), `systemone
 jevbench` scores a JevBench split with any engine, `systemone serve` runs the
@@ -271,10 +330,10 @@ four live-shim tools:
 
 | tool | maps to |
 |---|---|
-| `systemone_route` | `POST /v1/systemone/route` — tier, confidence, margin, model |
 | `systemone_decide` | `POST /v1/systemone/decide` — choice / score / noul |
 | `systemone_status` | shim health + active decide backend |
 | `systemone_rank_plans` | `POST /v1/systemone/rank-plans` |
+| `systemone_route` | `POST /v1/systemone/route` — optional tier, confidence, margin, model |
 
 Add to a client's MCP config, e.g.:
 
@@ -290,8 +349,8 @@ Add to a client's MCP config, e.g.:
 `systemone-acp` is a minimal ACP v1 agent (newline JSON-RPC on stdio, no extra
 dependencies) exposing exactly two commands to the user:
 
-- `/route [--cost-bias economy|balanced|quality] <task>`
 - `/decide` + a fenced JSON block (`type`/`state`/`instructions`/`criteria`)
+- `/route [--cost-bias economy|balanced|quality] <task>` — optional model/effort facet
 
 It routes/decides through the live shim and reports each step as ACP
 `session/update` notifications (tool calls + streamed message chunks).
@@ -318,7 +377,10 @@ the probe.
   TypeSafe confidence, prompt rows, `StallGuard`, `LatencyStats`,
   `make_questions`, request limits, and the API-token gate. Every backend
   and both servers build on it.
-- **`cli.py`** — the `systemone` agent CLI: `route` / `decide` / `status` /
+- **`decision_jobs.py`** — pure non-routing question sets: support triage,
+  a pre-side-effect action guard (abstain / withhold), and citation
+  grounding. State plus `choice` / `score` / `noul` questions. No shim.
+- **`cli.py`** — the `systemone` agent CLI: `decide` / `route` / `status` /
   `jevbench` / `battery` against the live shim, `local` (config health
   check, `--load` to verify a real model load + latency probe) and `ask`
   (one-shot Jev-style judgments) on the in-process engine, `serve` to run
@@ -431,16 +493,13 @@ the probe.
 
 All under `systemone/examples/`:
 
+- `demo_decision_jobs.py` — support triage, the pre-side-effect action
+  guard, and citation grounding. Prints the question sets. No model.
 - `demo_systemone.py` — all three primitives + batching timings
 - `demo_calibration.py` — ECE before/after on a hand-labeled set
-- `demo_autorouter.py` — Loki-Autorouter-style session-sticky model
-  routing: gliclass-edge (as the tiny decision model) routes the session's
-  first task to the cheapest sufficiently-capable local checkpoint
-  (`--cost-bias economy|balanced|quality`, confidence-gated, fail-open)
 - `demo_distill.py` — distill a content-safety classifier into gliclass-edge
 - `demo_speculative.py` — speculative multi-head: decide the operation
   AND its target argument in one batched pass (from `jev-ultrafast`)
-- `sample_decision_data.json` — routing + guardrail records in tune() format
 - `demo_sglang_backend.py` — same questions judged by the local
   engine and by SGLang's `/v1/decisions` side by side
 - `demo_decision_loop.py` — the fast agent loop: one batched
@@ -448,6 +507,12 @@ All under `systemone/examples/`:
   compression, uncertainty-gated actions
 - `desktop_clean_dryrun.py` — desktop-cleaning planner: one choice
   question per file in a single batched call, dry-run by default
+- `sample_decision_data.json` — decision records in tune() format,
+  including guardrail rows
+- `demo_autorouter.py` — optional facet: Loki-Autorouter-style
+  session-sticky model routing. gliclass-edge routes the session's first
+  task to the cheapest sufficiently-capable local checkpoint
+  (`--cost-bias economy|balanced|quality`, confidence-gated, fail-open)
 
 ## JevBench scoring
 
@@ -818,11 +883,11 @@ The shim (`:8765`) serves, all documented in `GET /openapi.json`:
 | `POST /v1/decisions` | SGLang dialect: batched choice/score/yes_no with `label_mass` |
 | `POST /v1/decide` | JEV System 1 dialect: `kind`/`state`/`question`/`options` |
 | `GET /v1/decide/info` | option limit, kinds, image support for `/v1/decide` |
-| `POST /v1/systemone/route` | cheapest sufficient tier + scored decision surface |
-| `POST /v1/systemone/rank-plans` | rank candidate plans for a task |
 | `POST /v1/systemone/decide` | single Jev-shaped decision via the sidecar (fail-open fallback) |
-| `POST /v1/systemone/permute` | permutation probe: one choice under `n_perm` orders, stability + spread |
 | `POST /v1/systemone/batch` | bulk judging: up to 32 TypeSafe bodies, per-item `{status, ...}` results |
+| `POST /v1/systemone/permute` | permutation probe: one choice under `n_perm` orders, stability + spread |
+| `POST /v1/systemone/rank-plans` | rank candidate plans for a task |
+| `POST /v1/systemone/route` | optional: cheapest sufficient tier + scored decision surface |
 
 The sidecar (`:8079`) serves `POST /v1/jeff1/decide`,
 `/v1/jeff1/rank-plans`, `/v1/jeff1/second-opinion`, and `GET /healthz`.
