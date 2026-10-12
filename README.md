@@ -505,6 +505,10 @@ All under `systemone/examples/`:
 - `demo_decision_loop.py` — the fast agent loop: one batched
   decisions call per tick (action + stuck? + progress), StallGuard, turn
   compression, uncertainty-gated actions
+- `systemone/envs.py` — real `Env` implementations for the DecisionLoop:
+  `FileSystemEnv` (ls/cd/read/write/mkdir), `ShellEnv` (shell commands
+  with safety blocks), `WebFetchEnv` (fetch URLs). Run
+  `python -m systemone.envs demo` for a smoke test
 - `desktop_clean_dryrun.py` — desktop-cleaning planner: one choice
   question per file in a single batched call, dry-run by default
 - `sample_decision_data.json` — decision records in tune() format,
