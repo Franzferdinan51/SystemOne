@@ -813,16 +813,66 @@ def _apply_scoring(
                     f"effort bumped to {bumped}, no tool pruning."
                 )
 
-        # Jeff-1 second head (uncertain routes only): record an advisory
-        # tier second opinion on the route. Never changes the routed tier.
-        if cal["uncertain"] and jeff1_enabled():
+        # Jeff-1 second head: the decider reviews EVERY scored route,
+        # and when it answers, its tier IS the decision -- the hybrid
+        # (rules + GLiClass) only proposes. One floor survives: when
+        # the deterministic analyzer's hard signals fired, its tier is
+        # a floor the decider cannot go below. Sidecar unreachable ->
+        # opinion is None and the hybrid route stands (fail-open).
+        if jeff1_enabled():
             opinion = _jeff1_second_opinion(task, route, cal, scoring)
             if opinion is not None:
                 route["jeff1_second_opinion"] = opinion
-                if not opinion.get("agree", True):
+                new_tier = opinion.get("tier")
+                if new_tier in _TIER_ORDER and new_tier != route.get("tier"):
+                    floor_tier = route.get("deterministic_tier")
+                    if (
+                        route.get("signals")
+                        and floor_tier in _TIER_ORDER
+                        and _TIER_ORDER.index(new_tier)
+                        < _TIER_ORDER.index(floor_tier)
+                    ):
+                        new_tier = floor_tier
+                    if new_tier != route.get("tier"):
+                        old_tier = route.get("tier")
+                        route["tier"] = new_tier
+                        tier_effort = _TIER_EFFORT.get(
+                            new_tier, route.get("effort", "medium"))
+                        # Keep any uncertainty effort bump already
+                        # applied above: the override never lowers it.
+                        cur_effort = route.get("effort", "medium")
+                        if (
+                            tier_effort in _EFFORT_LEVELS
+                            and cur_effort in _EFFORT_LEVELS
+                            and _EFFORT_LEVELS.index(tier_effort)
+                            < _EFFORT_LEVELS.index(cur_effort)
+                        ):
+                            tier_effort = cur_effort
+                        route["effort"] = tier_effort
+                        # Keep model_id consistent with the new tier
+                        # when the registry names one for it.
+                        reg = scoring.get("registry") or {}
+                        tiers_map = reg.get("tiers", reg) \
+                            if isinstance(reg, dict) else {}
+                        entry = tiers_map.get(new_tier) \
+                            if isinstance(tiers_map, dict) else None
+                        if isinstance(entry, dict) and entry.get("model_id"):
+                            route["model_id"] = entry["model_id"]
+                        opinion["applied"] = True
+                        route["rationale"] += (
+                            f" Jeff-1 (decider) decision applied: tier "
+                            f"{old_tier} -> {new_tier} "
+                            f"({opinion.get('rationale', '')})"
+                        )
+                    else:
+                        route["rationale"] += (
+                            " Jeff-1 (decider) pick held at the "
+                            "deterministic floor: "
+                            f"{opinion.get('rationale', '')}"
+                        )
+                elif new_tier == route.get("tier"):
                     route["rationale"] += (
-                        " Jeff-1 second opinion disagrees (advisory; tier "
-                        f"unchanged): {opinion.get('rationale', '')}"
+                        " Jeff-1 (decider) concurs with the hybrid tier."
                     )
 
         registry = scoring.get("registry") or {}
@@ -869,7 +919,7 @@ def _jeff1_second_opinion(
     cal: Dict[str, Any],
     scoring: Dict[str, Any],
 ) -> Optional[Dict[str, Any]]:
-    """Fetch Jeff-1's advisory tier second opinion; None on any failure.
+    """Fetch Jeff-1's tier second opinion; None on any failure.
 
     Builds the candidate list from the scoring registry and hands the
     uncertain route summary to the sidecar. Pure fail-open: every error
