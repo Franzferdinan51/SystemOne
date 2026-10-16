@@ -725,6 +725,7 @@ def route_decision(
         "probabilities": blended,
         "cost_bias": cost_bias,
         "deterministic_tier": det["tier"],
+        "deterministic_has_signal": bool(det["has_signal"]),
         "signals": det["reasons"],
         # Effort hint for agent loops: coarse reasoning budget for this task.
         "effort": effort,
@@ -823,9 +824,11 @@ def _apply_scoring(
         # (default d1-3b, served by LM Studio) reviews EVERY scored
         # route, and when it answers, its tier IS the decision -- the
         # hybrid (rules + GLiClass) only proposes. One floor survives:
-        # when the deterministic analyzer's hard signals fired, its
-        # tier is a floor D1 cannot go below. LM Studio unreachable ->
-        # the hybrid route stands (fail-open).
+        # when the deterministic analyzer's hard signals actually
+        # fired (det["has_signal"] — NOT the reasons list, which is
+        # non-empty even for "no strong signals"), its tier is a floor
+        # D1 cannot go below. Otherwise D1's tier IS the decision.
+        # LM Studio unreachable -> the hybrid route stands (fail-open).
         reg = scoring.get("registry") or {}
         tiers_map = reg.get("tiers", reg) if isinstance(reg, dict) else {}
         d1_candidates: List[Dict[str, str]] = []
@@ -848,7 +851,7 @@ def _apply_scoring(
             if new_tier in _TIER_ORDER and new_tier != route.get("tier"):
                 floor_tier = route.get("deterministic_tier")
                 if (
-                    route.get("signals")
+                    route.get("deterministic_has_signal")
                     and floor_tier in _TIER_ORDER
                     and _TIER_ORDER.index(new_tier)
                     < _TIER_ORDER.index(floor_tier)
