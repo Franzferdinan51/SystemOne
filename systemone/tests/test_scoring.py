@@ -476,7 +476,11 @@ def test_rank_plans_one_malformed_answer_degrades_only_its_plan():
 
 # -- route_decision scoring block -----------------------------------------------------
 
-def test_route_with_scoring_adds_surface():
+def test_route_with_scoring_adds_surface(monkeypatch):
+    # SYSTEMONE_D1=0: these route tests pin the hybrid (rules +
+    # GLiClass) scoring semantics; the live D1 head reviews routes
+    # when enabled and would override tier/effort underneath them.
+    monkeypatch.setenv("SYSTEMONE_D1", "0")
     engine = ScoringStubEngine(
         tool_scores={"webfetch": 0.9, "browserclaw": 0.85, "bash": 0.1})
     # medium-effort task -> tools get scored
@@ -497,7 +501,8 @@ def test_route_with_scoring_adds_surface():
         max(route["calibrated_probabilities"].values()), abs=1e-3)
 
 
-def test_route_confidence_follows_winner_not_top1():
+def test_route_confidence_follows_winner_not_top1(monkeypatch):
+    monkeypatch.setenv("SYSTEMONE_D1", "0")  # hybrid-only; see above
     engine = ScoringStubEngine()
     # quality bias lifts the tier above the distribution peak: tier and
     # confidence must agree with each other, not with the top-1.
@@ -519,7 +524,8 @@ def test_route_without_scoring_is_legacy_shape():
     assert "confidence" in route  # legacy heuristic confidence
 
 
-def test_uncertain_bumps_effort_and_skips_tools():
+def test_uncertain_bumps_effort_and_skips_tools(monkeypatch):
+    monkeypatch.setenv("SYSTEMONE_D1", "0")  # hybrid-only; see above
     engine = ScoringStubEngine(tool_scores={"webfetch": 0.95})
     route = route_decision(
         engine, "what is 2+2?", _cands(), "economy",
@@ -532,6 +538,7 @@ def test_uncertain_bumps_effort_and_skips_tools():
 
 
 def test_tool_scoring_env_knobs(monkeypatch):
+    monkeypatch.setenv("SYSTEMONE_D1", "0")  # hybrid-only; see above
     monkeypatch.setenv("SYSTEMONE_TOOL_FLOOR", "0.35")
     monkeypatch.setenv("SYSTEMONE_TOOL_TOPK", "1")
     engine = ScoringStubEngine(tool_scores={"webfetch": 0.95, "browserclaw": 0.92})

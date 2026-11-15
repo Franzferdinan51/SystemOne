@@ -4,15 +4,15 @@ No model needed: the shim-side client talks to stub HTTP sidecars, blending
 is pure, and fail-open paths (refused connection, timeout, malformed reply)
 are exercised with real sockets. Covers:
 
-- config parsing: default-on, SYSTEMONE_JEFF1=0 disables, URL/timeout/blend
+- config parsing: default-off, SYSTEMONE_JEFF1=1 enables, URL/timeout/blend
   defaults and overrides
 - rank_plans_via_jeff1 / second_opinion: parsed reply, malformed -> None,
   connection refused -> None (no raise), timeout respected
 - blend_rankings: 50/50 blend, cost penalty re-applied, re-sorted, fail-open
   when a plan is missing from the Jeff-1 reply
-- shim wiring: uncertain route records jeff1_second_opinion (advisory note
-  appended on disagreement); certain routes NEVER touch Jeff-1;
-  SYSTEMONE_JEFF1=0 skips it entirely
+- shim wiring: routes NEVER consult Jeff-1 for a second opinion (the D1
+  decision head reviews routes since the D1-head landing; the route never
+  carries a jeff1_second_opinion field, enabled or not)
 - POST /v1/systemone/rank-plans: stub sidecar -> jeff1.consulted=true and
   the ranking flips under the blend; sidecar down -> consulted=false,
   GLiClass-only ranking, still 200
@@ -156,11 +156,11 @@ def _post(port, path, payload, timeout=10):
 
 # -- config ---------------------------------------------------------------
 
-def test_jeff1_default_on(monkeypatch):
+def test_jeff1_default_off(monkeypatch):
     for var in ("SYSTEMONE_JEFF1", "SYSTEMONE_JEFF1_URL",
                 "SYSTEMONE_JEFF1_TIMEOUT", "SYSTEMONE_JEFF1_BLEND"):
         monkeypatch.delenv(var, raising=False)
-    assert jeff1_enabled() is True
+    assert jeff1_enabled() is False
     assert jeff1_url() == "http://127.0.0.1:8079"
     assert jeff1_timeout() == 2.5
     assert jeff1_blend_weight() == 0.5
@@ -196,6 +196,7 @@ def test_jeff1_bad_timeout_falls_back_to_default(monkeypatch, val):
 # -- fail-open client behavior --------------------------------------------
 
 def test_rank_plans_connection_refused_returns_none(monkeypatch):
+    monkeypatch.setenv("SYSTEMONE_JEFF1", "1")  # head is off by default now
     monkeypatch.setenv("SYSTEMONE_JEFF1_URL",
                        f"http://127.0.0.1:{_free_port()}")
     t0 = time.perf_counter()
@@ -212,6 +213,7 @@ def test_rank_plans_disabled_never_touches_network(monkeypatch):
 
 
 def test_timeout_respected(monkeypatch):
+    monkeypatch.setenv("SYSTEMONE_JEFF1", "1")
     server = _stub_sidecar(
         responses={"/v1/jeff1/rank-plans": {"ranking": []}},
         delays={"/v1/jeff1/rank-plans": 5.0})
@@ -227,6 +229,7 @@ def test_timeout_respected(monkeypatch):
 
 
 def test_rank_plans_parses_reply(monkeypatch):
+    monkeypatch.setenv("SYSTEMONE_JEFF1", "1")
     server = _stub_sidecar(responses={
         "/v1/jeff1/rank-plans": {
             "ranking": [{"id": "a", "p_success": 0.9},
@@ -251,6 +254,7 @@ def test_rank_plans_parses_reply(monkeypatch):
     {"nope": 1},
 ])
 def test_rank_plans_malformed_reply_returns_none(monkeypatch, bad):
+    monkeypatch.setenv("SYSTEMONE_JEFF1", "1")
     server = _stub_sidecar(
         responses={"/v1/jeff1/rank-plans": bad})
     port = server.server_address[1]
@@ -262,6 +266,7 @@ def test_rank_plans_malformed_reply_returns_none(monkeypatch, bad):
 
 
 def test_second_opinion_parses_reply(monkeypatch):
+    monkeypatch.setenv("SYSTEMONE_JEFF1", "1")
     server = _stub_sidecar(responses={
         "/v1/jeff1/second-opinion": {
             "tier": "heavy", "confidence": 0.71, "agree": False,
@@ -279,6 +284,7 @@ def test_second_opinion_parses_reply(monkeypatch):
 
 
 def test_second_opinion_malformed_or_down_returns_none(monkeypatch):
+    monkeypatch.setenv("SYSTEMONE_JEFF1", "1")
     monkeypatch.setenv("SYSTEMONE_JEFF1_URL",
                        f"http://127.0.0.1:{_free_port()}")
     assert second_opinion("task", {"tier": "balanced"}) is None
@@ -332,7 +338,7 @@ def test_blend_weight_env_override(monkeypatch):
     assert out[0]["p_success"] == 0.9
 
 
-# -- shim wiring: uncertain routes consult Jeff-1 ----------------------------
+# -- shim wiring: routes no longer consult Jeff-1 ----------------------------
 
 def _scoring_ctx_uncertain():
     return {
@@ -349,10 +355,16 @@ def _route(tier="balanced"):
             "confidence": 0.5, "probabilities": {}, "effort": "medium"}
 
 
-def test_uncertain_route_records_second_opinion(monkeypatch):
+def test_uncertain_route_jeff1_not_consulted(monkeypatch):
+    # Since the D1-head landing, routes are reviewed by D1, not Jeff-1:
+    # even with Jeff-1 enabled and a sidecar answering, an uncertain
+    # route never asks for a second opinion and never carries the field.
+    # (SYSTEMONE_D1=0 isolates the route from the D1 head as well, so
+    # the hybrid route stands alone here.)
     from systemone.scoring import reset_tuning
     reset_tuning()
     monkeypatch.setenv("SYSTEMONE_MARGIN_FLOOR", "0.99")  # everything uncertain
+    monkeypatch.setenv("SYSTEMONE_D1", "0")
     server = _stub_sidecar(responses={
         "/v1/jeff1/second-opinion": {
             "tier": "heavy", "confidence": 0.71, "agree": False,
@@ -366,21 +378,26 @@ def test_uncertain_route_records_second_opinion(monkeypatch):
                             {"economy": 0.45, "balanced": 0.40, "heavy": 0.15},
                             _scoring_ctx_uncertain())
         assert route["uncertain"] is True
-        opinion = route["jeff1_second_opinion"]
-        assert opinion == {"tier": "heavy", "confidence": 0.71,
-                           "agree": False, "rationale": "heavy fits better"}
-        # disagreement noted on the rationale, tier untouched
-        assert "advisory" in route["rationale"]
+        assert "jeff1_second_opinion" not in route
+        # the sidecar was never even asked
+        assert "/v1/jeff1/second-opinion" not in server.hits
+        # no advisory note; the hybrid tier stands
+        assert "advisory" not in route["rationale"]
         assert route["tier"] == "balanced"
     finally:
         server.shutdown()
         monkeypatch.delenv("SYSTEMONE_MARGIN_FLOOR", raising=False)
 
 
-def test_uncertain_route_agreeing_opinion_no_rationale_note(monkeypatch):
+def test_uncertain_route_no_second_opinion_note(monkeypatch):
+    # Companion to the above: with an agreeing opinion on offer the
+    # route still records nothing — no field, no rationale note (the
+    # effort-bump note from the uncertain path itself is still there;
+    # that's not Jeff-1).
     from systemone.scoring import reset_tuning
     reset_tuning()
     monkeypatch.setenv("SYSTEMONE_MARGIN_FLOOR", "0.99")
+    monkeypatch.setenv("SYSTEMONE_D1", "0")
     server = _stub_sidecar(responses={
         "/v1/jeff1/second-opinion": {
             "tier": "balanced", "confidence": 0.8, "agree": True,
@@ -393,9 +410,8 @@ def test_uncertain_route_agreeing_opinion_no_rationale_note(monkeypatch):
         shim._apply_scoring(_StubEngine(), "some ambiguous task", route,
                             {"economy": 0.45, "balanced": 0.40, "heavy": 0.15},
                             _scoring_ctx_uncertain())
-        assert route["jeff1_second_opinion"]["agree"] is True
-        # no disagreement note when the heads agree (the effort-bump note
-        # from the uncertain path itself is still there — that's not Jeff-1)
+        assert "jeff1_second_opinion" not in route
+        assert "/v1/jeff1/second-opinion" not in server.hits
         assert "second opinion" not in route["rationale"]
     finally:
         server.shutdown()

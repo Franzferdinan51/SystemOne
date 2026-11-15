@@ -1,15 +1,18 @@
 """Tests for POST /v1/systemone/decide (systemone/shim.py).
 
-No model needed: HTTP tests run against a stub engine, and Jeff-1 is
-either monkeypatched or served by a fake loopback sidecar. Covers:
+No model needed: HTTP tests run against a stub engine, and the D1
+decision head / Jeff-1 are monkeypatched (Jeff-1 is also served by a
+fake loopback sidecar in the client tests below). Covers:
 
 - request validation -> 400 (bad type, missing state/instructions,
   malformed criteria), mirroring the sidecar's decide schema
-- primary path: proxy to the Jeff-1 sidecar; the reply comes back with
-  backend "decider" and the forwarded request is the decide schema
-- fail-open fallback: sidecar down / 404 / malformed -> the local
-  GLiClass machinery answers with backend "fallback", sidecar-shaped
-  response, TypeSafe confidence wiring
+- primary path: the D1 decision head (LM Studio /v1/systemone); the
+  reply comes back with backend "d1" and the head's model named
+- second path: the Jeff-1 sidecar, when enabled; the reply comes back
+  with the backend the sidecar reported ("decider")
+- fail-open fallback: every head unavailable -> the local GLiClass
+  machinery answers with backend "fallback", sidecar-shaped response,
+  TypeSafe confidence wiring
 - per-type temperature info appears only when the engine carries a
   fitted per-answer-type calibrator
 - metric recording: decide_records grows and decide_metrics_summary()
@@ -104,13 +107,16 @@ def _post_decide(port, payload, raw=None):
 
 
 def _fallback(monkeypatch, engine, reply=None):
-    """Force the fail-open path; returns the list of forwarded payloads."""
+    """Force the fail-open path: the D1 head is down and Jeff-1 returns
+    *reply* (None = sidecar down). Returns the list of payloads Jeff-1
+    was forwarded."""
     seen = []
 
     def fake_decide(payload, timeout=None):
         seen.append(payload)
         return reply
 
+    monkeypatch.setattr(shim, "decide_via_d1", lambda *a, **k: None)
     monkeypatch.setattr(shim, "decide_via_jeff1", fake_decide)
     engine.systemone_calls.clear()
     return seen
@@ -177,20 +183,20 @@ def test_decide_rejects_non_object_body(server, monkeypatch):
     assert "error" in body
 
 
-# -- primary path: proxy to Jeff-1 -------------------------------------------
+# -- primary path: the D1 decision head --------------------------------------
 
 
-def test_proxy_path_backend_decider(server, monkeypatch):
+def test_primary_path_backend_d1(server, monkeypatch):
     _, port, engine = server
     forwarded = []
 
-    def fake_decide(payload, timeout=None):
-        forwarded.append(payload)
+    def fake_d1(state_text, qtype, instructions, criteria, model=None):
+        forwarded.append((state_text, qtype, instructions, criteria, model))
         return {"type": "choice", "label": "b",
                 "probabilities": {"a": 0.2, "b": 0.8},
-                "confidence": 0.6}
+                "confidence": 0.6, "model": "d1-2b"}
 
-    monkeypatch.setattr(shim, "decide_via_jeff1", fake_decide)
+    monkeypatch.setattr(shim, "decide_via_d1", fake_d1)
     code, body = _post_decide(port, {
         "state": "some page text",
         "instructions": "Pick the best.",
@@ -198,37 +204,36 @@ def test_proxy_path_backend_decider(server, monkeypatch):
         "type": "choice",
     })
     assert code == 200
-    assert body["backend"] == "decider"
+    assert body["backend"] == "d1"
     assert body["type"] == "choice"
     assert body["label"] == "b"
     assert body["probabilities"] == {"a": 0.2, "b": 0.8}
     assert body["confidence"] == 0.6
+    assert body["model"] == "d1-2b"
     assert isinstance(body["latency_ms"], (int, float))
     assert "temperature" not in body
-    # forwarded verbatim in the sidecar's decide schema
-    assert forwarded == [{
-        "state": "some page text",
-        "instructions": "Pick the best.",
-        "criteria": {"a": "first", "b": "second"},
-        "type": "choice",
-    }]
+    # the head received the decide inputs verbatim; no model was named
+    # in the request, so None rides along and the head resolves it
+    assert forwarded == [("some page text", "choice", "Pick the best.",
+                          {"a": "first", "b": "second"}, None)]
     # the local engine was never touched on the primary path
     assert engine.systemone_calls == []
 
 
-def test_proxy_path_noul_passthrough(server, monkeypatch):
+def test_primary_path_noul_passthrough(server, monkeypatch):
     _, port, engine = server
     monkeypatch.setattr(
-        shim, "decide_via_jeff1",
-        lambda payload, timeout=None: {
+        shim, "decide_via_d1",
+        lambda state_text, qtype, instructions, criteria, model=None: {
             "type": "noul", "label": "no",
-            "probabilities": {"yes": 0.3, "no": 0.7}, "confidence": 0.7})
+            "probabilities": {"yes": 0.3, "no": 0.7}, "confidence": 0.7,
+            "model": "d1-2b"})
     code, body = _post_decide(port, {
         "state": "x", "instructions": "Is it true?", "type": "noul",
         "criteria": {"yes": "holds", "no": "fails"},
     })
     assert code == 200
-    assert body["backend"] == "decider"
+    assert body["backend"] == "d1"
     assert body["label"] == "no"
     assert body["probabilities"] == {"yes": 0.3, "no": 0.7}
 
@@ -453,9 +458,11 @@ def test_decide_via_jeff1_disabled_is_fail_open(monkeypatch, fake_sidecar):
 
 
 def test_proxy_path_preserves_sidecar_backend(server, monkeypatch):
-    """The shim passes through the backend the sidecar reported (decider),
-    instead of stamping every proxied answer with a fixed label."""
+    """With the D1 head down, the Jeff-1 branch answers — and the shim
+    passes through the backend the sidecar reported (decider), instead
+    of stamping every proxied answer with a fixed label."""
     _, port, engine = server
+    monkeypatch.setattr(shim, "decide_via_d1", lambda *a, **k: None)
     monkeypatch.setattr(
         shim, "decide_via_jeff1",
         lambda payload, timeout=None: {
