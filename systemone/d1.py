@@ -1,4 +1,4 @@
-"""D1 decision models (Liquid d1-3b / d1-omni-600m) via LM Studio.
+"""D1 decision models (Liquid d1-2b / d1-omni-2b) via LM Studio.
 
 LM Studio serves its loaded decision models on ``POST /v1/systemone``
 — the SystemOne wire: a state plus named typed questions (choice /
@@ -8,9 +8,11 @@ is the shim's client for that endpoint, written in the same shape as
 the jeff1.py sidecar helpers: every function fails open to ``None``
 and never raises.
 
-Duckets' rule (2026-10-15): the decision models are d1-3b and
-d1-omni-600m, full stop. Clients name the decision model per request
-(grok-local sends ``model: "d1-3b"`` with every SystemOne call); only
+Duckets' rule (2026-10-15, updated 2026-11-14): the decision
+models are d1-2b and d1-omni-2b, full stop - the 2B pair won the
+2026-11-14 gate (58 scored probes, dedicated :1235 harness) over
+d1-3b / d1-omni-600m. Clients name the decision model per request
+(grok-local sends ``model: "d1-2b"`` with every SystemOne call); only
 d1-family ids are honored — anything else falls back to the
 configured default, so a chat model can never be named into the
 decision seat.
@@ -19,7 +21,7 @@ Environment:
   SYSTEMONE_D1          kill switch (off-values disable; default on)
   SYSTEMONE_D1_URL      LM Studio base URL (default
                         http://127.0.0.1:1234; LMSTUDIO_URL fallback)
-  SYSTEMONE_D1_MODEL    default decision model (default "d1-3b")
+  SYSTEMONE_D1_MODEL    default decision model (default "d1-2b")
   SYSTEMONE_D1_TIMEOUT  per-request seconds (default 20)
   SYSTEMONE_D1_BLEND    D1 weight in the rank-plans blend (default 0.5)
 """
@@ -33,8 +35,8 @@ import urllib.request
 from typing import Any, Dict, List, Optional
 
 _OFF_VALUES = {"0", "false", "no", "off"}
-_DEFAULT_MODEL = "d1-3b"
-FAST_MODEL = "d1-omni-600m"
+_DEFAULT_MODEL = "d1-2b"
+FAST_MODEL = "d1-omni-2b"
 
 
 def d1_enabled() -> bool:
@@ -80,8 +82,8 @@ def d1_blend_weight() -> float:
 def resolve_model(name: Any) -> str:
     """The decision model to call: a client-named d1 id, else the default.
 
-    Only ids starting with "d1" (d1-3b, d1-omni-600m, future d1-*) are
-    honored; anything else resolves to SYSTEMONE_D1_MODEL / "d1-3b".
+    Only ids starting with "d1" (d1-2b, d1-omni-2b, future d1-*) are
+    honored; anything else resolves to SYSTEMONE_D1_MODEL / "d1-2b".
     """
     default = os.environ.get("SYSTEMONE_D1_MODEL", "").strip() or _DEFAULT_MODEL
     if isinstance(name, str):

@@ -12,7 +12,7 @@ Usage:
     from systemone.model_lifecycle import track_model_use, start_reaper
 
     # Call when SystemOne selects a model for a task:
-    track_model_use("ornith-1.5-35b-a3b")
+    track_model_use("arete-27b-splash")
 
     # Start background reaper (call once at startup):
     start_reaper(idle_timeout_s=900)  # unload models idle >15min

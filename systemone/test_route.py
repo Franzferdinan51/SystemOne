@@ -102,7 +102,7 @@ def test_load_bundled_registry():
     reg = load_registry()
     assert reg["economy"]["model_id"] == "minicpm5-2b"
     assert reg["balanced"]["model_id"] == "ornith-1.5-9b"
-    assert reg["heavy"]["model_id"] == "ornith-1.5-35b-a3b"
+    assert reg["heavy"]["model_id"] == "arete-27b-splash"
     assert list(reg) == ["economy", "balanced", "heavy"]  # cheapest-first order
     assert "latency_ms_p50" in reg["economy"]  # placeholder for measured receipts
 

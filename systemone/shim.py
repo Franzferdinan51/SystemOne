@@ -2474,7 +2474,7 @@ class ShimHandler(BaseHTTPRequestHandler):
                 ranking, d1_ranking, tier_cost, weight=d1_blend_weight())
             d1_info["consulted"] = True
             d1_info["blended"] = True
-            d1_info["model"] = body.get("model") or "d1-3b"
+            d1_info["model"] = body.get("model") or "d1-2b"
         jeff1: Dict[str, Any] = {"consulted": False, "latency_ms": None,
                                  "blended": False}
         if jeff1_enabled():
