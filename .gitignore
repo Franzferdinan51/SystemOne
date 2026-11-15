@@ -9,3 +9,6 @@ venv/
 .DS_Store
 dist/
 build/
+
+# local backup snapshots
+*.bak-*

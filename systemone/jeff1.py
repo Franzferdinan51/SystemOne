@@ -14,7 +14,7 @@ Hot-path rule: certain routes never touch Jeff-1.
 
 Configuration — no hard-coded knobs:
 
-- ``SYSTEMONE_JEFF1``         "1"/"0" — enable the head (default "1" = ON)
+- ``SYSTEMONE_JEFF1``         "1"/"0" — enable the head (default "0" = OFF)
 - ``SYSTEMONE_JEFF1_URL``      sidecar base URL
                               (default "http://127.0.0.1:8079")
 - ``SYSTEMONE_JEFF1_TIMEOUT``  per-request seconds (default "2.5")
@@ -42,8 +42,9 @@ _OFF_VALUES = {"0", "false", "no", "off", "disabled"}
 
 
 def jeff1_enabled() -> bool:
-    """Is the Jeff-1 head on? Default ON; only explicit off-values disable."""
-    raw = os.environ.get("SYSTEMONE_JEFF1", "1").strip().lower()
+    """Is the Jeff-1 head on? Default OFF; an explicit non-off value
+    ("1", "true", ...) enables it, explicit off-values keep it off."""
+    raw = os.environ.get("SYSTEMONE_JEFF1", "0").strip().lower()
     return raw not in _OFF_VALUES
 
 
