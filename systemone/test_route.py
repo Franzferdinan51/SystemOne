@@ -341,7 +341,13 @@ def _post(port, path, body):
         return e.code, json.loads(e.read())
 
 
-def test_http_route_roundtrip(log_file):
+def test_http_route_roundtrip(log_file, monkeypatch):
+    # SYSTEMONE_D1=0: these HTTP route tests pin the hybrid (rules +
+    # GLiClass) routing semantics; the live D1 head reviews every
+    # scored route when enabled and would override the tier underneath
+    # them (its candidates come from the server registry, where the
+    # stub registry's only D1-visible tier is 'heavy').
+    monkeypatch.setenv("SYSTEMONE_D1", "0")
     server, t = _serve_stub()
     try:
         status, payload = _post(
@@ -377,7 +383,8 @@ def test_http_route_bad_requests():
         t.join(timeout=5)
 
 
-def test_http_route_custom_registry_inline():
+def test_http_route_custom_registry_inline(monkeypatch):
+    monkeypatch.setenv("SYSTEMONE_D1", "0")  # hybrid-only; see above
     server, t = _serve_stub()
     try:
         status, payload = _post(
@@ -400,7 +407,8 @@ def _read_log(path):
         return [json.loads(line) for line in f if line.strip()]
 
 
-def test_latency_logged_for_both_endpoints(log_file):
+def test_latency_logged_for_both_endpoints(log_file, monkeypatch):
+    monkeypatch.setenv("SYSTEMONE_D1", "0")  # hybrid-only; see above
     server, t = _serve_stub()
     port = server.server_address[1]
     try:
@@ -521,7 +529,11 @@ def test_route_fallbacks_exclude_winner():
     assert route["fallbacks"] == []
 
 
-def test_route_explore_is_deterministic_with_rng():
+def test_route_explore_is_deterministic_with_rng(monkeypatch):
+    # SYSTEMONE_D1=0: the explore roll is pinned against the hybrid
+    # winner; the live D1 head would re-pick the winner first and the
+    # seeded roll would land differently (see test_http_route_roundtrip).
+    monkeypatch.setenv("SYSTEMONE_D1", "0")
     import random
 
     mk = lambda seed: route_decision(
